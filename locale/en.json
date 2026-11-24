@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Focus window on notification click",
+    "description": "Clicking a DeepSeek Harness system notification restores and focuses the desktop window."
+  }
+}
