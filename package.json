@@ -1,7 +1,7 @@
-{
+﻿{
   "name": "dsh-window-focus",
-  "version": "1.0.1",
-  "description": "点击审批/提醒通知时，把 DeepSeek Harness 桌面窗口带到前台。",
+  "version": "1.0.0",
+  "description": "鐐瑰嚮瀹℃壒/鎻愰啋閫氱煡鏃讹紝鎶?DeepSeek Harness 妗岄潰绐楀彛甯﹀埌鍓嶅彴銆?,
   "type": "module",
   "main": "index.js",
   "exports": {
@@ -50,3 +50,4 @@
     }
   }
 }
+
