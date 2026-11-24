@@ -26,6 +26,15 @@
     "notification",
     "window-focus"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fanrongbo2006/dsh-window-focus.git"
+  },
+  "homepage": "https://github.com/fanrongbo2006/dsh-window-focus#readme",
+  "bugs": {
+    "url": "https://github.com/fanrongbo2006/dsh-window-focus/issues"
+  },
+  "author": "fanrongbo2006",
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
