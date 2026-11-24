@@ -20,6 +20,7 @@
 - [开发](#开发)
 - [安全与隐私](#安全与隐私)
 - [已知限制](#已知限制)
+- [许可证](#许可证)
 
 ---
 
@@ -81,7 +82,7 @@ index.js（Host 进程）
 
 ## 安装
 
-本插件目前**没有发布到 npm**，所以插件市场里搜不到。推荐用下面的方式一（手动安装），也可以让 DSH 里的 agent 代劳（方式二）。
+有三种方式：npm 包安装（发布后可用）、手动安装（离线可用）、让 agent 代劳。目前 npm 包仍在准备发布中；如果 `dsh plugin add` 提示找不到包，请用方式一或方式二。
 
 ### 方式一：手动安装（推荐）
 
@@ -182,9 +183,17 @@ plugin_manager install_bundle target = C:\dsh\plugins\dsh-window-focus
 
 它会自动完成方式一的第 3～4 步：把 `link:` 依赖写进 profile、把插件加进 `dsh.profile.bundles`、在 `node_modules` 建联接，并应用 bundle 补丁。安装结果里 `application: "applied"` 表示成功。
 
-### 方式三：插件市场（暂不可用）
+### 方式三：npm 包 / 插件市场（发布后）
 
-发布到 npm 之后，可以在 **设置 → 插件市场** 搜索安装。发布前需要在 `package.json` 里补 `repository`、`author` 等元数据，并按 DSH bundle 规范打 tag。当前版本不提供这条路径。
+插件发布到 npm 后，可以直接按包名安装：
+
+```powershell
+dsh plugin --profile desktop add dsh-window-focus
+```
+
+也可以让 agent 用 `plugin_manager` 按 npm 包名安装。发布并收录进插件市场目录后，还能在 **设置 → 插件市场** 里搜索 `dsh-window-focus` 一键安装。
+
+> 截至本文更新时 npm 包仍在发布准备中；若安装时报 `404`，请先用方式一或方式二。
 
 ## 使用
 
@@ -316,3 +325,7 @@ node --check client.js
 - 浏览器版（`http://127.0.0.1:<端口>`）无效——这是浏览器的安全边界，不是插件能绕过的。
 - 若系统处于「阻止应用抢占前台」状态，聚焦可能被降级为任务栏闪烁；这与 Windows 的前台锁策略有关。
 - 多显示器 / 多虚拟桌面下，窗口会恢复并聚焦，但不会主动切换到它所在的虚拟桌面。
+
+## 许可证
+
+MIT © fanrongbo2006
