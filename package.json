@@ -1,6 +1,6 @@
 {
   "name": "dsh-window-focus",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "点击审批/提醒通知时，把 DeepSeek Harness 桌面窗口带到前台。",
   "type": "module",
   "main": "index.js",
@@ -36,6 +36,9 @@
   },
   "author": "fanrongbo2006",
   "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"

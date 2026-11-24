@@ -82,9 +82,19 @@ index.js（Host 进程）
 
 ## 安装
 
-有三种方式：npm 包安装（发布后可用）、手动安装（离线可用）、让 agent 代劳。目前 npm 包仍在准备发布中；如果 `dsh plugin add` 提示找不到包，请用方式一或方式二。
+有三种方式：npm 安装（推荐，需要联网）、手动安装（离线可用）、让 agent 代劳。包已发布到 npm（包名 `dsh-window-focus`）。
 
-### 方式一：手动安装（推荐）
+### 方式一：npm 安装（推荐）
+
+```powershell
+dsh plugin --profile desktop add dsh-window-focus
+```
+
+安装后重启 DeepSeek Harness（托盘图标 → 退出 → 重新打开）。也可以打开 **设置 → 插件市场**，搜索 `dsh-window-focus` 一键安装。
+
+> 国内网络默认走 npm 镜像，镜像的 `latest` 偶尔会滞后几分钟；如果报 404，稍等或改用方式二手动安装。
+
+### 方式二：手动安装（离线可用）
 
 #### 0. 准备
 
@@ -173,27 +183,11 @@ window.__dshWindowFocusInstalled;
 
 返回 `true` 表示客户端包装已生效。返回 `undefined` 说明页面还没重新加载，按 `Ctrl+R` 刷新页面（或再重启一次应用）。
 
-### 方式二：让 DSH 里的 agent 安装
+### 方式三：让 DSH 里的 agent 安装
 
-如果你在用 DSH 的编码 agent，直接让它安装即可。agent 会调用 `plugin_manager` 的 `install_bundle`，把插件目录的绝对路径传进去：
+如果你在用 DSH 的编码 agent，直接让它安装即可：把 npm 包名交给 `plugin_manager` 的 `install_bundle`，或者让它按上面的 `dsh plugin add` 执行。
 
-```
-plugin_manager install_bundle target = C:\dsh\plugins\dsh-window-focus
-```
-
-它会自动完成方式一的第 3～4 步：把 `link:` 依赖写进 profile、把插件加进 `dsh.profile.bundles`、在 `node_modules` 建联接，并应用 bundle 补丁。安装结果里 `application: "applied"` 表示成功。
-
-### 方式三：npm 包 / 插件市场（发布后）
-
-插件发布到 npm 后，可以直接按包名安装：
-
-```powershell
-dsh plugin --profile desktop add dsh-window-focus
-```
-
-也可以让 agent 用 `plugin_manager` 按 npm 包名安装。发布并收录进插件市场目录后，还能在 **设置 → 插件市场** 里搜索 `dsh-window-focus` 一键安装。
-
-> 截至本文更新时 npm 包仍在发布准备中；若安装时报 `404`，请先用方式一或方式二。
+也可以让它安装本地目录（离线场景）：把目录绝对路径传给 `install_bundle`，它会自动完成方式二的第 3～4 步——把 `link:` 依赖写进 profile、把插件加进 `dsh.profile.bundles`、在 `node_modules` 建联接，并应用 bundle 补丁。安装结果里 `application: "applied"` 表示成功。
 
 ## 使用
 
