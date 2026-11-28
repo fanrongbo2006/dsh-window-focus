@@ -8,16 +8,21 @@ const ROUTE = '/dsh-window-focus/result'
 const FOCUS_ROUTE = '/dsh-window-focus/focus'
 const DISMISS_ROUTE = '/dsh-window-focus/dismiss'
 const STATE_ROUTE = '/dsh-window-focus/state'
+const DECISIONS_ROUTE = '/dsh-window-focus/decisions'
 const APP_ID = 'Fanrongbo.DSH.WindowFocus'
 const PROTOCOL = 'dsh-window-focus'
-const APPROVAL_TIMEOUT_MS = 30000
 // Unanswered approvals are re-notified a few times: once is easy to miss when
 // the user has just stepped away, but a notification every minute forever is
 // noise. After the limit the in-app card is the remaining reminder.
 const REMINDER_DELAY_MS = Number(process.env.DSH_WINDOW_FOCUS_REMIND_MS) > 0
   ? Number(process.env.DSH_WINDOW_FOCUS_REMIND_MS)
-  : 40000
+  : 25000
 const REMINDER_LIMIT = 3
+// The toast must outlive every reminder, otherwise the card promotion would
+// happen first and the user would never see a second notification. This is a
+// backstop, not a reminder interval, so it stays independent of the env
+// override that tests use to shorten reminders.
+const TOAST_TIMEOUT_MS = 120000
 const ACTIVE_KEY = Symbol.for('dsh-window-focus.active-instance')
 
 const OUTCOME_ALLOW = 'allowed-once'
@@ -385,6 +390,25 @@ export function apply(ctx) {
   ensureShortcut()
 
   const pending = new Map()
+  // Decisions answered from a toast are also reported to the browser half: an
+  // approval request is presented as an in-app card when the user is looking at
+  // the app, and answering that same request from the toast has to dismiss the
+  // card as well. The browser polls this short-lived list and presses the
+  // matching card button, which lets the normal UI own the dismissal.
+  const decisions = []
+  const DECISION_TTL_MS = 120_000
+  const recordDecision = (entry, outcome) => {
+    decisions.push({
+      id: entry.id,
+      outcome,
+      toolName: entry.toolName,
+      reason: entry.reason,
+      at: Date.now(),
+    })
+    const cutoff = Date.now() - DECISION_TTL_MS
+    while (decisions.length > 0 && decisions[0].at < cutoff) decisions.shift()
+    if (decisions.length > 50) decisions.splice(0, decisions.length - 50)
+  }
   // The browser half reports whether the app window is in the foreground; when
   // the user is already looking at the in-app card a toast would be noise.
   let windowFocused = false
@@ -395,6 +419,9 @@ export function apply(ctx) {
     debug(`finish id=${id} outcome=${String(outcome)}`)
     pending.delete(id)
     clearTimeout(entry.timer)
+    if (outcome === OUTCOME_ALLOW || outcome === OUTCOME_REJECT) {
+      recordDecision(entry, outcome)
+    }
     entry.settle(outcome)
     return true
   }
@@ -526,11 +553,14 @@ export function apply(ctx) {
         debug(`timeout id=${id}`)
         promoteOnce()
         promoteAll()
-      }, APPROVAL_TIMEOUT_MS)
+      }, TOAST_TIMEOUT_MS)
       scheduleReminder()
     }
     pending.set(id, {
+      id,
       token,
+      toolName: request.toolName,
+      reason: request.reason,
       get timer() {
         return timer
       },
@@ -738,4 +768,19 @@ export function apply(ctx) {
       sendJson(res, 200, { ok: true })
     },
   }), 'dsh-window-focus: state route')
+
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: DECISIONS_ROUTE,
+    handler: async (req, res) => {
+      if (req.method !== 'GET') {
+        res.setHeader('allow', 'GET')
+        sendJson(res, 405, { ok: false, error: 'method-not-allowed' })
+        return
+      }
+      const cutoff = Date.now() - DECISION_TTL_MS
+      while (decisions.length > 0 && decisions[0].at < cutoff) decisions.shift()
+      sendJson(res, 200, { ok: true, decisions })
+    },
+  }), 'dsh-window-focus: decisions route')
 }

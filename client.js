@@ -23,6 +23,7 @@ window.__ModuleLoader__.load({
     const FOCUS_ENDPOINT = '/dsh-window-focus/focus'
     const DISMISS_ENDPOINT = '/dsh-window-focus/dismiss'
     const STATE_ENDPOINT = '/dsh-window-focus/state'
+    const DECISIONS_ENDPOINT = '/dsh-window-focus/decisions'
     const APPROVAL_TITLE = '正在申请权限'
     const QUESTION_TITLE = '模型在等你回答'
     const DSH_TITLE = /(正在申请权限|模型在等你回答|对话完成|生成失败|输出被截断)/
@@ -267,7 +268,51 @@ window.__ModuleLoader__.load({
         window.addEventListener('blur', onWindowBlur)
         postState(typeof document !== 'undefined' && document.hasFocus())
 
+        // A request can already be shown as an in-app card when the user steps
+        // away and answers it from the toast. The host reports those toast
+        // decisions here; pressing the matching card button lets the normal UI
+        // close the card and finish the interaction instead of leaving a
+        // zombie card behind.
+        const normalize = (value) => String(value ?? '').replace(/\s+/g, ' ').trim()
+        const handledDecisions = new Set()
+        const findCard = (decision) => {
+          if (typeof document === 'undefined') return undefined
+          const cards = Array.from(document.querySelectorAll('[data-approval-key]'))
+          if (cards.length === 0) return undefined
+          const needle = normalize(decision.reason).slice(0, 40)
+          if (needle !== '') {
+            const matching = cards.find((card) => normalize(card.textContent).includes(needle))
+            if (matching !== undefined) return matching
+          }
+          return cards.length === 1 ? cards[0] : undefined
+        }
+        const pressCard = (card, outcome) => {
+          const buttons = Array.from(card.querySelectorAll('button'))
+          const pattern = outcome === 'rejected' ? /拒绝|reject|deny/i : /允许|allow/i
+          const button = buttons.find((candidate) => !candidate.disabled && pattern.test(normalize(candidate.textContent)))
+          if (button !== undefined) button.click()
+        }
+        const pollDecisions = async () => {
+          if (typeof document === 'undefined') return
+          if (document.querySelector('[data-approval-key]') === null) return
+          try {
+            const response = await fetch(DECISIONS_ENDPOINT, { headers: { accept: 'application/json' } })
+            if (!response.ok) return
+            const data = await response.json()
+            for (const decision of data.decisions ?? []) {
+              if (typeof decision.id !== 'string' || handledDecisions.has(decision.id)) continue
+              handledDecisions.add(decision.id)
+              const card = findCard(decision)
+              if (card !== undefined) pressCard(card, decision.outcome)
+            }
+          } catch {
+            // The window may be closing; the next tick can retry.
+          }
+        }
+        const pollTimer = setInterval(pollDecisions, 700)
+
         ctx.effect(() => () => {
+          clearInterval(pollTimer)
           window.removeEventListener('focus', onWindowFocus)
           window.removeEventListener('blur', onWindowBlur)
           if (window.Notification === WrappedNotification) {
