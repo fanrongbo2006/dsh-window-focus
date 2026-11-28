@@ -409,10 +409,28 @@ export function apply(ctx) {
     while (decisions.length > 0 && decisions[0].at < cutoff) decisions.shift()
     if (decisions.length > 50) decisions.splice(0, decisions.length - 50)
   }
-  // Unanswered questions are re-notified the same way as approvals: while the
-  // user is away a single toast is easy to miss.
+  // Unanswered questions are surfaced the same way as approvals: while the user
+  // is away a toast is shown and re-shown a few times. A question that arrives
+  // while the app has focus stays card-only until the window loses focus.
   const questions = new Map()
 
+  const showQuestion = (entry) => {
+    if (entry.done || entry.shown || !entry.origin) return false
+    if (!showQuestionToast(entry.origin, {
+      id: entry.id,
+      title: entry.title,
+      body: entry.body,
+      tag: entry.tag,
+    })) return false
+    entry.shown = true
+    debug(`question toast shown id=${entry.id}`)
+    return true
+  }
+  const closeQuestionToast = (entry) => {
+    if (!entry.shown) return
+    entry.shown = false
+    closeToast(entry.id, { noClear: true, tag: entry.tag })
+  }
   const finishQuestion = (id) => {
     const entry = questions.get(id)
     if (!entry) return
@@ -422,7 +440,7 @@ export function apply(ctx) {
       clearTimeout(entry.timer)
       entry.timer = null
     }
-    closeToast(id, { noClear: true, tag: entry.tag })
+    closeQuestionToast(entry)
   }
   const scheduleQuestionReminder = (entry) => {
     if (entry.done || entry.timer !== null || entry.reminders >= REMINDER_LIMIT) return
@@ -434,24 +452,25 @@ export function apply(ctx) {
         return
       }
       entry.reminders += 1
-      closeToast(entry.id, { noClear: true, tag: entry.tag })
+      closeQuestionToast(entry)
       entry.tag = reminderTag(entry.id, entry.reminders)
-      if (!showQuestionToast(entry.origin, {
-        id: entry.id,
-        title: entry.title,
-        body: entry.body,
-        tag: entry.tag,
-      })) return
+      if (!showQuestion(entry)) return
       debug(`question reminder ${entry.reminders} id=${entry.id}`)
       scheduleQuestionReminder(entry)
     }, REMINDER_DELAY_MS)
   }
+  // Called when the window loses focus: a question that arrived while the user
+  // was looking at the app had no toast yet, so surface it now and start
+  // counting reminders from here.
   const notifyQuestions = () => {
     for (const entry of questions.values()) {
-      if (entry.done) continue
-      if (!windowFocused) scheduleQuestionReminder(entry)
+      if (entry.done || windowFocused) continue
+      showQuestion(entry)
+      scheduleQuestionReminder(entry)
     }
   }
+  // Called when the window regains focus: drop the question toasts, keep the
+  // question itself in memory so a later blur can surface it again.
   const closeQuestionToasts = () => {
     for (const entry of questions.values()) {
       if (entry.done) continue
@@ -459,7 +478,7 @@ export function apply(ctx) {
         clearTimeout(entry.timer)
         entry.timer = null
       }
-      closeToast(entry.id, { noClear: true, tag: entry.tag })
+      closeQuestionToast(entry)
     }
   }
 
@@ -691,6 +710,7 @@ export function apply(ctx) {
         title: '❓ 需要你回答',
         body: '模型在等你回答一个问题，点击回到 DeepSeek Harness。',
         tag: toastTag(id),
+        shown: false,
         reminders: 0,
         timer: null,
         done: false,
@@ -698,13 +718,13 @@ export function apply(ctx) {
       questions.set(id, entry)
       try {
         entry.origin = ctx.webServer.getOrigin()
-        showQuestionToast(entry.origin, {
-          id,
-          title: entry.title,
-          body: entry.body,
-          tag: entry.tag,
-        })
         debug(`question requested id=${id}`)
+        if (windowFocused) {
+          // The in-app question is already on screen; no toast while focused.
+          debug(`question card only id=${id}`)
+        } else {
+          showQuestion(entry)
+        }
         scheduleQuestionReminder(entry)
       } catch {
         // no toast: the in-app question UI is still there
