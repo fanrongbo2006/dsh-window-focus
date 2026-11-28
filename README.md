@@ -1,6 +1,6 @@
 # dsh-window-focus
 
-> 点击 DeepSeek Harness 桌面端的系统通知（权限审批、提问、对话完成），窗口立即恢复并跳到前台。
+> 点击 DeepSeek Harness 桌面端的系统通知（权限审批、提问、对话完成），窗口立即恢复并跳到前台；审批通知还带「允许一次 / 拒绝」按钮，可以直接在通知里完成授权。
 
 **dsh-window-focus** 是一个 DeepSeek Harness（DSH）桌面端插件（bundle）。它解决一个很小但很烦的问题：Harness 在后台或最小化时弹出了审批通知，你点了通知，界面却不会来到你面前。
 
@@ -26,10 +26,36 @@
 
 ## 功能
 
-- 点击系统通知 → 恢复最小化 / 从托盘显示 / 把窗口提到前台并聚焦。
+- 点击 Harness 的系统通知 → 恢复最小化 / 从托盘显示 / 把窗口提到前台并聚焦。
+- **审批通知可直接点「允许一次 / 拒绝」**（Windows 桌面端 1.1.0+）：宿主先收到审批请求，弹出一条原生 toast，按钮通过自定义协议回调 Host 完成授权，并同时把窗口带到前台。
+- 30 秒内没有选择时，toast 自动关闭，审批卡片回退到应用内等待处理；已有 toast 未决时，新请求直接走应用内卡片，不会堆积。
+- 只接管 Harness 自己发出的通知（标题含 `正在申请权限`、`模型在等你回答`、`对话完成`、`生成失败`、`输出被截断`）；页面上其它来源的通知原样放行，不会附加任何行为。
 - 不修改 `dsh-pet` 等通知发送方：只在通知对象上追加一个 `click` 监听，原有 `onclick` 逻辑照常执行。
 - 只在桌面应用内生效；浏览器标签页里完全不做干预（由浏览器自己切换窗口/标签页）。
 - 插件卸载时自动还原原生 `window.Notification`，不留副作用。
+- 通知发出前会改写审批/提问通知的文案（见下节）。
+
+### 通知内容与严重级
+
+审批和提问通知在到达系统通知中心之前会被改写：
+
+| 通知 | 标题 | 正文 |
+| --- | --- | --- |
+| 审批 · 只读类 | `👁️ <原会话名> · 正在申请权限` | `工具「…」：原因前 48 字…` |
+| 审批 · 本地写入类 | `✏️ …` | 同上 |
+| 审批 · 破坏性 / 工作区外写入 | `⚠️ …` | 同上 |
+| 审批 · 凭证 / 对外副作用 / 配置变更 | `⛔ …` | 同上 |
+| 模型提问 | `❓ 模型在等你回答` | `需要你回答一个问题，点击回到 DeepSeek Harness。` |
+| 其它（完成、失败等） | 不改 | 不改 |
+
+- 原因超过 48 个字符时只保留前半段并以 `…` 结尾；提问内容完全不进通知。
+- 等级由「工具名 + 原因」共同判断，取两者中更高的等级：`Write`/`Edit` 一律算本地写入，`WebFetch`/`WebSearch`/`Bash` 中的 `rm`、`plugin_manager`/`install` 等工具名优先于模糊的原因文案；原因关键词（读取/hosts、写入/创建、删除/工作区外、SSH/私钥/POST/安装插件 等）作为兜底。审批事件本身不携带危险等级字段，所以这仍然是推断，无法保证对任意第三方工具 100% 准确。
+- 渲染进程无法给 Windows 系统通知设置边框颜色，因此等级用标题前缀表示（`👁️` / `✏️` / `⚠️` / `⛔`）；通知图标保留 `dsh-pet` 原来的鲸鱼形象，不会被替换。
+- 同一请求的通知带稳定的 `tag`：发送方短时间内重复触发时，系统替换旧通知而不是叠加一屏；点击过的请求在 90 秒内不再弹出。
+- 通知正文在交给系统前会修复非法 UTF-16 代理项并截断到安全长度，避免构造通知时报 `InvalidStateError`。
+- 原生 toast 路径同样按严重级加前缀，正文取请求原因前 64 字；点击正文回到 DSH，点击按钮则直接完成授权。
+- 两条通知路径分工：Windows 桌面端审批由 Host 弹原生 toast（带按钮）；提问与完成类通知仍来自 `dsh-pet`，由客户端改写文案并补点击聚焦。
+- 点击通知的正文只负责回到 DSH，不会替用户做决定；需要授权时请按「允许一次」或「拒绝」按钮。
 
 ## 为什么需要它
 
@@ -69,6 +95,31 @@ index.js（Host 进程）
 2. **重新拉起应用**：桌面应用是单实例的。新进程拿不到实例锁会自己退出，但退出前会把 `second-instance` 事件交给主实例，主实例借此恢复并聚焦窗口。
 3. **只在需要时做了这件事**：页面里先判断 `location.protocol === 'dsh-app:'`，浏览器打开的 Harness（`http://127.0.0.1:<端口>`）不会注册任何监听。
 
+### 审批按钮（1.1.0）
+
+```
+agent 请求审批
+   │
+   ▼
+index.js（Host，global + prepend 监听 approval/request）
+   生成随机 id + token
+   用 PowerShell + WinRT 弹原生 toast（两个按钮，协议激活）
+   │  ── 30 秒内没操作 ──▶ 关闭 toast，next() 回退到应用内审批卡片
+   ▼
+用户点击「允许一次 / 拒绝」
+   协议激活 dsh-window-focus:allow|reject?id=…&token=…&endpoint=…
+   │
+   ▼
+scripts/toast-action.ps1 解析 URI，POST /dsh-window-focus/result
+   │  宿主校验 id + token，决定 outcome
+   ▼
+返回 allowed-once / rejected，同时把窗口带到前台
+```
+
+- toast 的 AppUserModelId 为 `Fanrongbo.DSH.WindowFocus`，协议 `dsh-window-focus:` 指向本插件的 `toast-action.ps1`；
+- 结果路由校验一次性 token，外部网页无法伪造审批结果；
+- 同一时间只弹一个可操作 toast，避免多个审批堆叠。
+
 ## 兼容性
 
 | 项目 | 要求 |
@@ -83,6 +134,8 @@ index.js（Host 进程）
 ## 安装
 
 有三种方式：npm 安装（推荐，需要联网）、手动安装（离线可用）、让 agent 代劳。包已发布到 npm（包名 `dsh-window-focus`）。
+
+> **版本提示**：npm 上的 1.0.0 只有“点击聚焦 + 文案改写”；带「允许一次 / 拒绝」按钮的 1.1.0 需要从 GitHub 仓库手动安装，或等 npm 更新后再用方式一。
 
 ### 方式一：npm 安装（推荐）
 
@@ -230,6 +283,15 @@ await fetch('/dsh-window-focus/focus', { method: 'POST' }).then(r => r.json())
 3. 点击弹出的系统通知；
 4. 窗口应恢复并聚焦。
 
+**D. 审批按钮测试（1.1.0+）**
+
+1. 触发任意一次需要审批的操作（或让 agent 执行一条会请求权限的命令）；
+2. 通知应以原生 toast 形式出现，带「允许一次」「拒绝」两个按钮，标题前有等级前缀；
+3. 点「允许一次」→ 审批直接通过，窗口被带到前台；点「拒绝」→ 审批被拒绝；
+4. 什么都不点，等 30 秒 → toast 消失，应用内出现审批卡片。
+
+Host 侧日志：`%TEMP%\dsh-window-focus-debug.log`（记录 `apply`、`approval`、`toast exit`、`finish`）。
+
 ## 故障排查
 
 | 现象 | 可能原因 | 处理 |
@@ -269,8 +331,11 @@ await fetch('/dsh-window-focus/focus', { method: 'POST' }).then(r => r.json())
 
 | 文件 | 作用 |
 | --- | --- |
-| `index.js` | Host 半侧：注册 focus 路由，重新拉起桌面应用 |
-| `client.js` | 浏览器半侧：用 Proxy 包装 `window.Notification`，补点击监听 |
+| `index.js` | Host 半侧：拦截审批、弹原生 toast、注册 focus/result 路由、重新拉起桌面应用 |
+| `client.js` | 浏览器半侧：用 Proxy 包装 `window.Notification`，补点击监听、改写文案 |
+| `scripts/toast.ps1` | 用 WinRT 弹带按钮的 toast（协议激活） |
+| `scripts/toast-action.ps1` | 协议回调：解析按钮 URI，POST 结果到 Host |
+| `scripts/close-toast.ps1` | 超时或取消时关闭/清除通知 |
 | `cordis.patch.yml` | bundle 挂载声明，让 DSH 在启动时加载本插件 |
 | `locale/zh.json`、`locale/en.json` | 插件市场里的标题与描述 |
 | `icon.svg` | 市场卡片图标 |
@@ -280,13 +345,15 @@ await fetch('/dsh-window-focus/focus', { method: 'POST' }).then(r => r.json())
 
 ```
 POST /dsh-window-focus/focus
+POST /dsh-window-focus/result
 ```
 
 | 状态码 | 响应 | 含义 |
 | --- | --- | --- |
-| `200` | `{"ok":true}` | 已请求拉起窗口 |
+| `200` | `{"ok":true}` | 已请求拉起窗口 / 已记录审批结果 |
 | `405` | `{"allow":"POST"}` | 用了非 POST 方法 |
-| `409` | `{"ok":false,"reason":"not-desktop"}` | 当前 Host 不是桌面环境 |
+| `400` | `{"ok":false,"error":"bad-request"}` | 缺少 id / token / 非法 decision |
+| `403` | `{"ok":false,"error":"forbidden"}` | id 不存在或 token 不匹配 |
 
 客户端只在 `location.protocol === 'dsh-app:'` 时注册监听，因此浏览器版不会发出这些请求。
 
@@ -309,9 +376,11 @@ node --check client.js
 ## 安全与隐私
 
 - 路由只监听本机，只接受 `POST`；
+- 审批结果路由要求一次性随机 `id + token` 匹配，页面或外部程序猜不到，也无法伪造「允许」；
 - 不收集、不上传任何数据；
 - 不修改 `dsh-pet` 或其它插件的代码，只给通知对象追加监听；
-- Host 侧唯一的外部动作是启动**同一个应用的可执行文件**（路径取自环境变量或 `process.execPath`）。
+- Host 侧的外部动作只有两个：启动**同一个应用的可执行文件**（路径取自环境变量或 `process.execPath`），以及通过 PowerShell 弹系统通知；
+- 协议 `dsh-window-focus:` 与 AUMID 都写在 `HKCU` 下，卸载插件后可手动删除这两个注册表项。
 
 ## 已知限制
 
@@ -319,6 +388,10 @@ node --check client.js
 - 浏览器版（`http://127.0.0.1:<端口>`）无效——这是浏览器的安全边界，不是插件能绕过的。
 - 若系统处于「阻止应用抢占前台」状态，聚焦可能被降级为任务栏闪烁；这与 Windows 的前台锁策略有关。
 - 多显示器 / 多虚拟桌面下，窗口会恢复并聚焦，但不会主动切换到它所在的虚拟桌面。
+- 通知栏里的「允许一次 / 拒绝」按钮只在 **Windows 桌面端 1.1.0+** 可用；浏览器版（`http://127.0.0.1:<端口>`）的 Web Notification 不支持按钮。
+- toast 通过 HKCU 的 AppUserModelId + 自定义协议实现（未打包应用没有包标识）。个别系统上通知可能显示在「Windows PowerShell」分组下，或需要在系统通知设置里允许该来源。
+- 通知边框颜色无法从插件设置，等级用标题前缀（`👁️` / `✏️` / `⚠️` / `⛔`）表示。
+- 同一时间只保留一个可操作 toast：上一个未决时，新审批直接回退到应用内卡片；toast 超过 30 秒未操作也会回退。
 
 ## 许可证
 

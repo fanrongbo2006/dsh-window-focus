@@ -1,6 +1,6 @@
 {
   "meta": {
-    "title": "Focus window on notification click",
-    "description": "Clicking a DeepSeek Harness system notification restores and focuses the desktop window."
+    "title": "Focus window and approve from notifications",
+    "description": "Clicking a DeepSeek Harness system notification restores and focuses the desktop window. Approval notifications include Allow once / Reject buttons so you can answer without switching apps."
   }
 }

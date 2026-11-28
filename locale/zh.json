@@ -1,6 +1,6 @@
 {
   "meta": {
-    "title": "点击通知回到窗口",
-    "description": "点击 DeepSeek Harness 的系统通知时，自动把桌面窗口带到前台。"
+    "title": "点击通知回到窗口，审批可直接授权",
+    "description": "点击 DeepSeek Harness 的系统通知时把桌面窗口带到前台；审批通知带「允许一次 / 拒绝」按钮，可直接在通知里完成授权。"
   }
 }
