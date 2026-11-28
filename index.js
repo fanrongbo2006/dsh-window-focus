@@ -603,10 +603,10 @@ export function apply(ctx) {
     // updating the existing entry, and the previous one is removed first so the
     // center does not fill with copies.
     const scheduleReminder = () => {
-      if (reminders >= REMINDER_LIMIT || promotedOnce || toastClosed) return
+      if (reminders >= REMINDER_LIMIT || toastClosed) return
       reminderTimer = setTimeout(() => {
         reminderTimer = null
-        if (promotedOnce || toastClosed) return
+        if (toastClosed) return
         if (windowFocused) {
           // Back at the keyboard: the card is enough, but keep the option open
           // for a later blur.
@@ -626,7 +626,17 @@ export function apply(ctx) {
     // in-app card stays registered here without a toast, so it can still be
     // surfaced when the window later loses focus.
     const notify = () => {
-      if (toastShown || promotedOnce) return
+      if (promotedOnce) {
+        if (!toastClosed) return
+        // The user came back once, which closed the toast and stopped the
+        // reminders. If they leave again while the request is still unanswered,
+        // surface it again and restart the reminder cycle.
+        toastClosed = false
+        toastShown = false
+        reminders = 0
+        currentTag = toastTag(id)
+      }
+      if (toastShown) return
       toastShown = true
       if (!showToast({ id, title, body, endpoint, token, tag: currentTag })) {
         // No toast script (or not Windows): the in-app card is the only path.
@@ -669,15 +679,19 @@ export function apply(ctx) {
     }
 
     const first = await Promise.race([sessionPromise ?? new Promise(() => {}), promotedResult, toastResult])
-    const entry = pending.get(id)
-    if (entry) {
-      clearTimeout(entry.timer)
-      pending.delete(id)
+
+    const leave = () => {
+      const entry = pending.get(id)
+      if (entry) {
+        clearTimeout(entry.timer)
+        pending.delete(id)
+      }
     }
 
     if (first.source === 'session') {
       // Answered in the in-app card: the toast for this request is obsolete,
       // and removing it clears the notification group.
+      leave()
       closeOnce()
       promoteAll()
       return first.value
@@ -685,16 +699,27 @@ export function apply(ctx) {
     if (first.value === OUTCOME_ALLOW || first.value === OUTCOME_REJECT) {
       // Answering from the toast must also clear it from the notification
       // center; leaving it there is what users experience as a zombie toast.
+      leave()
       closeOnce()
       // Closing one toast clears the app's notification group, so any other
       // queued approvals are promoted to their in-app cards right away.
       promoteAll()
       return first.value
     }
-    // The toast was dismissed, its body was clicked, or it timed out: fall back
-    // to the in-app card and wait for the user's decision there.
-    const decision = await startSession()
-    return decision.value
+    // Dismissed, body clicked, or timed out: the in-app card is the primary
+    // path, but `notify()` re-arms when the window loses focus again, so the
+    // request can still be answered from a later toast. Keep the entry alive
+    // until one of the two paths decides.
+    const second = await Promise.race([sessionPromise ?? new Promise(() => {}), toastResult])
+    leave()
+    if (second.source === 'session') return second.value
+    if (second.value === OUTCOME_ALLOW || second.value === OUTCOME_REJECT) {
+      closeOnce()
+      promoteAll()
+      return second.value
+    }
+    const third = await startSession()
+    return third.value
   }
 
   ctx.effect(() => {
