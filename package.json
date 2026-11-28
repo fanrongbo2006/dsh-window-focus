@@ -1,6 +1,6 @@
 {
   "name": "dsh-window-focus",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "description": "审批通知可直接「允许一次/拒绝」，点击通知把 DeepSeek Harness 桌面窗口带到前台。",
   "type": "module",
   "main": "index.js",

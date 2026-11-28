@@ -7,6 +7,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 const ROUTE = '/dsh-window-focus/result'
 const FOCUS_ROUTE = '/dsh-window-focus/focus'
 const DISMISS_ROUTE = '/dsh-window-focus/dismiss'
+const STATE_ROUTE = '/dsh-window-focus/state'
 const APP_ID = 'Fanrongbo.DSH.WindowFocus'
 const PROTOCOL = 'dsh-window-focus'
 const APPROVAL_TIMEOUT_MS = 30000
@@ -219,6 +220,7 @@ function showToast({ id, title, body, endpoint, token }) {
   if (existsSync(AVATAR_ICON)) {
     args.push('-IconPath', AVATAR_ICON)
   }
+  debug(`toast spawn icon=${String(existsSync(AVATAR_ICON))} title=${title}`)
   if (process.platform !== 'win32') return
   try {
     const child = spawn(powershellPath(), args, {
@@ -269,6 +271,9 @@ export function apply(ctx) {
   registerAppId()
 
   const pending = new Map()
+  // The browser half reports whether the app window is in the foreground; when
+  // the user is already looking at the in-app card a toast would be noise.
+  let windowFocused = false
 
   const finish = (id, outcome) => {
     const entry = pending.get(id)
@@ -295,6 +300,11 @@ export function apply(ctx) {
       return early.value
     }
 
+    if (windowFocused) {
+      const early = await sessionResult
+      return early.value
+    }
+
     const id = randomUUID()
     const token = randomBytes(16).toString('hex')
     const endpoint = (() => {
@@ -310,7 +320,7 @@ export function apply(ctx) {
     }
 
     const level = severityOf(request.toolName, request.reason)
-    const title = `${severityPrefix(level)}DeepSeek Harness · 权限请求`
+    const title = `${severityPrefix(level)}正在申请权限`
     const body = shorten(request.reason) || `工具「${request.toolName}」请求权限`
 
     let resolveToast
@@ -331,6 +341,7 @@ export function apply(ctx) {
       },
     })
     showToast({ id, title, body, endpoint, token })
+    debug(`toast shown title=${title}`)
 
     const first = await Promise.race([sessionResult, toastResult])
     const entry = pending.get(id)
@@ -441,4 +452,24 @@ export function apply(ctx) {
       sendJson(res, 200, { ok: true })
     },
   }), 'dsh-window-focus: dismiss route')
+
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: STATE_ROUTE,
+    handler: async (req, res) => {
+      if (req.method !== 'POST') {
+        res.setHeader('allow', 'POST')
+        sendJson(res, 405, { ok: false, error: 'method-not-allowed' })
+        return
+      }
+      const body = await readJsonBody(req)
+      if (!body || typeof body.focused !== 'boolean') {
+        sendJson(res, 400, { ok: false, error: 'bad-request' })
+        return
+      }
+      windowFocused = body.focused
+      debug(`window focused=${windowFocused}`)
+      sendJson(res, 200, { ok: true })
+    },
+  }), 'dsh-window-focus: state route')
 }

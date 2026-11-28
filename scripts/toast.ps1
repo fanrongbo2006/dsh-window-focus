@@ -10,7 +10,8 @@ param(
   [string]$Tag = '',
   [string]$Level = '1',
   [string]$IconPath = '',
-  [switch]$DryRun
+  [switch]$DryRun,
+  [switch]$EmitXml
 )
 
 $ErrorActionPreference = 'Stop'
@@ -53,7 +54,10 @@ $imageXml
 
 $xml = New-Object Windows.Data.Xml.Dom.XmlDocument
 $xml.LoadXml($xmlString)
-if ($DryRun) { Write-Output 'ok'; return }
+if ($DryRun) {
+  if ($EmitXml) { Write-Output $xmlString } else { Write-Output 'ok' }
+  return
+}
 $toast = New-Object Windows.UI.Notifications.ToastNotification $xml
 if ($Tag) { $toast.Tag = $Tag }
 $notifier = [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($AppId)

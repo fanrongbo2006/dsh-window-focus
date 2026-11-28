@@ -22,6 +22,7 @@ window.__ModuleLoader__.load({
   factory() {
     const FOCUS_ENDPOINT = '/dsh-window-focus/focus'
     const DISMISS_ENDPOINT = '/dsh-window-focus/dismiss'
+    const STATE_ENDPOINT = '/dsh-window-focus/state'
     const APPROVAL_TITLE = '正在申请权限'
     const QUESTION_TITLE = '模型在等你回答'
     const DSH_TITLE = /(正在申请权限|模型在等你回答|对话完成|生成失败|输出被截断)/
@@ -244,7 +245,15 @@ window.__ModuleLoader__.load({
         // Coming back through the app window (or Alt-Tab) should clear the
         // toast: the pending approval is answered in the in-app card instead.
         let lastDismiss = 0
+        const postState = (focused) => {
+          fetch(STATE_ENDPOINT, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ focused }),
+          }).catch(() => {})
+        }
         const onWindowFocus = () => {
+          postState(true)
           const now = Date.now()
           if (now - lastDismiss < 1500) return
           lastDismiss = now
@@ -254,10 +263,14 @@ window.__ModuleLoader__.load({
             body: '{}',
           }).catch(() => {})
         }
+        const onWindowBlur = () => postState(false)
         window.addEventListener('focus', onWindowFocus)
+        window.addEventListener('blur', onWindowBlur)
+        postState(typeof document !== 'undefined' && document.hasFocus())
 
         ctx.effect(() => () => {
           window.removeEventListener('focus', onWindowFocus)
+          window.removeEventListener('blur', onWindowBlur)
           if (window.Notification === WrappedNotification) {
             window.Notification = NativeNotification
           }
