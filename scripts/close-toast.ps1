@@ -1,6 +1,7 @@
 param(
   [string]$AppId = 'Fanrongbo.DSH.WindowFocus',
-  [string]$Tag = ''
+  [string]$Tag = '',
+  [switch]$NoClear
 )
 
 $ErrorActionPreference = 'Continue'
@@ -45,6 +46,12 @@ public static extern void SetCurrentProcessExplicitAppUserModelID(string appId);
   Start-Sleep -Milliseconds 120
   $left = @($history.GetHistory($AppId))
   Write-Log ("after remove count={0}" -f $left.Count)
+  if ($NoClear) {
+    # Question toasts are closed lazily: clearing the whole group here could
+    # wipe approval toasts that the user has not answered yet.
+    Write-Log 'no-clear requested, keeping remaining notifications'
+    exit 0
+  }
   if ($left.Count -gt 0) {
     # Tag matching can miss (protocol-activated toasts are not always indexed by
     # tag); clearing the app's group is the fallback. The Host promotes any

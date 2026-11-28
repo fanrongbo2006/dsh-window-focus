@@ -34,6 +34,17 @@ $id = $query['id']
 $token = $query['token']
 $endpoint = $query['endpoint']
 
+# Plain "want the window back" activation: no token, only the focus route.
+if ($action -eq 'focus') {
+  if ($endpoint -match '^http://(127\.0\.0\.1|localhost):\d+/dsh-window-focus/focus$') {
+    try {
+      Add-Content -Path $LogPath -Value ("[{0}] action=focus" -f (Get-Date -Format 'HH:mm:ss')) -ErrorAction SilentlyContinue
+      Invoke-RestMethod -Method Post -Uri $endpoint -ContentType 'application/json' -Body '{}' -TimeoutSec 5 | Out-Null
+    } catch { }
+  }
+  exit 0
+}
+
 # Never post credentials anywhere except the local Host route that produced the
 # toast; the protocol can be invoked with a hand-written URI as well.
 if (-not $id -or -not $token -or -not $endpoint) { exit 0 }

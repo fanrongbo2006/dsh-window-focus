@@ -5,10 +5,10 @@
  *
  * 1. Raises the desktop window when a DeepSeek Harness notification is
  *    clicked, so the app comes back to the foreground.
- * 2. Rewrites question notifications before they reach the OS: the question
- *    text is removed entirely. Approval notifications from dsh-pet are
- *    suppressed on the desktop page because the host plugin already shows one
- *    actionable toast (allow / reject) for the same request.
+ * 2. Suppresses dsh-pet's approval and question copies on the desktop page: the
+ *    host plugin already shows one native notification for each (approval with
+ *    allow / reject buttons, question as a plain reminder without options), so
+ *    letting the duplicate through would ask twice.
  *
  * Every other notification is constructed with its original arguments and is
  * never touched: the module must not take over unrelated notifications.
@@ -118,11 +118,10 @@ window.__ModuleLoader__.load({
       }
 
       if (heading.includes(QUESTION_TITLE)) {
-        const body = '需要你回答一个问题，点击回到 DeepSeek Harness。'
-        return {
-          title: '❓ ' + heading,
-          options: safeOptions(options, body, 'dsh-window-focus:question:' + hashCode(heading + body)),
-        }
+        // The host shows one plain "you have been asked a question" toast for
+        // every question, even while the window is focused; dsh-pet's copy is
+        // suppressed to avoid two notifications asking the same thing.
+        return { suppress: true }
       }
 
       // Turn-finished and error notifications keep their text; only the

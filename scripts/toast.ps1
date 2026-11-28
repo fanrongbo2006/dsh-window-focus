@@ -2,8 +2,8 @@ param(
   [string]$AppId = 'Fanrongbo.DSH.WindowFocus',
   [string]$Title = 'DeepSeek Harness',
   [string]$Body = '',
-  [Parameter(Mandatory = $true)][string]$AllowUri,
-  [Parameter(Mandatory = $true)][string]$RejectUri,
+  [string]$AllowUri = '',
+  [string]$RejectUri = '',
   [Parameter(Mandatory = $true)][string]$OpenUri,
   [string]$AllowLabel = 'Allow once',
   [string]$RejectLabel = 'Reject',
@@ -39,6 +39,16 @@ if ($IconPath -and (Test-Path -LiteralPath $IconPath)) {
   $imageXml = '      <image placement="appLogoOverride" hint-crop="circle" src="' + (& $esc $iconUri) + '" />'
 }
 
+$actionsXml = ''
+if ($AllowUri -and $RejectUri) {
+  $actionsXml = @"
+  <actions>
+    <action content="$(& $esc $AllowLabel)" arguments="$(& $esc $AllowUri)" activationType="protocol" />
+    <action content="$(& $esc $RejectLabel)" arguments="$(& $esc $RejectUri)" activationType="protocol" />
+  </actions>
+"@
+}
+
 $xmlString = @"
 <toast activationType="protocol" launch="$(& $esc $OpenUri)" duration="long">
   <visual>
@@ -48,10 +58,7 @@ $xmlString = @"
 $imageXml
     </binding>
   </visual>
-  <actions>
-    <action content="$(& $esc $AllowLabel)" arguments="$(& $esc $AllowUri)" activationType="protocol" />
-    <action content="$(& $esc $RejectLabel)" arguments="$(& $esc $RejectUri)" activationType="protocol" />
-  </actions>
+$actionsXml
 </toast>
 "@
 

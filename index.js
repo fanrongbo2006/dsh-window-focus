@@ -303,22 +303,52 @@ function showToast({ id, title, body, endpoint, token }) {
   }
 }
 
-function closeToast(id) {
+function closeToast(id, { noClear = false } = {}) {
   if (!existsSync(CLOSE_SCRIPT)) return
   try {
-    const child = spawn(powershellPath(), [
+    const args = [
       '-NoProfile',
       '-ExecutionPolicy', 'Bypass',
       '-WindowStyle', 'Hidden',
       '-File', CLOSE_SCRIPT,
       '-AppId', APP_ID,
       '-Tag', toastTag(id),
-    ], { stdio: 'ignore', windowsHide: true })
+    ]
+    if (noClear) args.push('-NoClear')
+    const child = spawn(powershellPath(), args, { stdio: 'ignore', windowsHide: true })
     child.on('error', () => {})
     child.on('exit', (code) => debug(`close exit ${String(code)} tag=${toastTag(id)}`))
     child.unref()
   } catch {
     // ignore
+  }
+}
+
+function showQuestionToast(origin, { id, title, body }) {
+  if (!existsSync(TOAST_SCRIPT) || !origin) return false
+  const params = new URLSearchParams({ endpoint: `${origin}${FOCUS_ROUTE}` })
+  const openUri = `${PROTOCOL}:focus?${params.toString()}`
+  const args = [
+    '-NoProfile',
+    '-ExecutionPolicy', 'Bypass',
+    '-WindowStyle', 'Hidden',
+    '-File', TOAST_SCRIPT,
+    '-AppId', APP_ID,
+    '-Title', title,
+    '-Body', body,
+    '-OpenUri', openUri,
+    '-Tag', toastTag(id),
+  ]
+  if (existsSync(AVATAR_ICON)) args.push('-IconPath', AVATAR_ICON)
+  debug(`question toast spawn title=${title}`)
+  try {
+    const child = spawn(powershellPath(), args, { stdio: 'ignore', windowsHide: true })
+    child.on('error', (error) => debug(`question toast error ${String(error)}`))
+    child.on('exit', (code) => debug(`question toast exit ${code}`))
+    child.unref()
+    return true
+  } catch {
+    return false
   }
 }
 
@@ -492,6 +522,35 @@ export function apply(ctx) {
       }
     }
   }, 'dsh-window-focus: approval listener')
+
+  // Questions are also surfaced by the host: dsh-pet silently drops them while
+  // the page is focused, which is exactly when the user asked to be reminded.
+  // The client half suppresses dsh-pet's question toast, so there is exactly one
+  // notification per question and it never contains the answer options.
+  ctx.effect(() => {
+    const dispose = ctx.on('user-questions/request', (request, next) => {
+      const id = randomUUID()
+      try {
+        const origin = ctx.webServer.getOrigin()
+        showQuestionToast(origin, {
+          id,
+          title: '❓ 需要你回答',
+          body: '模型在等你回答一个问题，点击回到 DeepSeek Harness。',
+        })
+        debug(`question requested id=${id}`)
+      } catch {
+        // no toast: the in-app question UI is still there
+      }
+      const answered = Promise.resolve().then(() => next())
+      answered.then(
+        () => closeToast(id, { noClear: true }),
+        () => closeToast(id, { noClear: true }),
+      )
+      return answered
+    }, { global: true, prepend: true })
+    debug(`question listener registered type=${typeof dispose}`)
+    return () => dispose?.()
+  }, 'dsh-window-focus: question notifications')
 
   ctx.effect(() => ctx.webServer.register({
     kind: 'exact',
