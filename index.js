@@ -422,10 +422,18 @@ export function apply(ctx) {
       promoted = () => resolve(startSession())
     })
     let promotedOnce = false
+    let toastClosed = false
+    // Windows clears the app's whole notification group on Remove, so closing
+    // the same toast twice would wipe unrelated notifications. Close once.
+    const closeOnce = () => {
+      if (toastClosed) return
+      toastClosed = true
+      closeToast(id)
+    }
     const promoteOnce = () => {
       if (promotedOnce) return
       promotedOnce = true
-      closeToast(id)
+      closeOnce()
       promoted()
     }
     const timer = setTimeout(() => {
@@ -453,14 +461,14 @@ export function apply(ctx) {
     if (first.source === 'session') {
       // Answered in the in-app card: the toast for this request is obsolete,
       // and removing it clears the notification group.
-      closeToast(id)
+      closeOnce()
       promoteAll()
       return first.value
     }
     if (first.value === OUTCOME_ALLOW || first.value === OUTCOME_REJECT) {
       // Answering from the toast must also clear it from the notification
       // center; leaving it there is what users experience as a zombie toast.
-      closeToast(id)
+      closeOnce()
       // Closing one toast clears the app's notification group, so any other
       // queued approvals are promoted to their in-app cards right away.
       promoteAll()
