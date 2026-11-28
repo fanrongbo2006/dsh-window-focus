@@ -21,6 +21,7 @@ window.__ModuleLoader__.load({
   id: 'dsh-window-focus',
   factory() {
     const FOCUS_ENDPOINT = '/dsh-window-focus/focus'
+    const DISMISS_ENDPOINT = '/dsh-window-focus/dismiss'
     const APPROVAL_TITLE = '正在申请权限'
     const QUESTION_TITLE = '模型在等你回答'
     const DSH_TITLE = /(正在申请权限|模型在等你回答|对话完成|生成失败|输出被截断)/
@@ -240,7 +241,23 @@ window.__ModuleLoader__.load({
         window.Notification = WrappedNotification
         window.__dshWindowFocusInstalled = true
 
+        // Coming back through the app window (or Alt-Tab) should clear the
+        // toast: the pending approval is answered in the in-app card instead.
+        let lastDismiss = 0
+        const onWindowFocus = () => {
+          const now = Date.now()
+          if (now - lastDismiss < 1500) return
+          lastDismiss = now
+          fetch(DISMISS_ENDPOINT, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: '{}',
+          }).catch(() => {})
+        }
+        window.addEventListener('focus', onWindowFocus)
+
         ctx.effect(() => () => {
+          window.removeEventListener('focus', onWindowFocus)
           if (window.Notification === WrappedNotification) {
             window.Notification = NativeNotification
           }

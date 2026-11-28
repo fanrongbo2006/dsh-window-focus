@@ -27,8 +27,9 @@
 ## 功能
 
 - 点击 Harness 的系统通知 → 恢复最小化 / 从托盘显示 / 把窗口提到前台并聚焦。
-- **审批通知可直接点「允许一次 / 拒绝」**（Windows 桌面端 1.1.0+）：宿主先收到审批请求，弹出一条原生 toast，按钮通过自定义协议回调 Host 完成授权；按钮只完成授权、不切换窗口，点通知正文才回到 DSH。
-- 30 秒内没有选择时，toast 自动关闭，审批卡片回退到应用内等待处理；已有 toast 未决时，新请求直接走应用内卡片，不会堆积。
+- **审批请求始终出现在应用内，并额外提供「允许一次 / 拒绝」toast**（Windows 桌面端 1.1.0+）：宿主先把请求转发给应用内审批卡，再弹出一条原生 toast；点按钮通过自定义协议回调 Host 直接完成授权，按钮只授权、不切换窗口。
+- 点 toast 正文会回到 DSH 并关闭 toast，但审批卡片仍留在应用内等你决定；从任务栏、快捷方式或 Alt-Tab 回到窗口时 toast 也会自动消失。30 秒未操作时 toast 关闭，审批卡片同样保留。
+- 同一时间只保留一条可操作 toast，后续审批请求只进应用内卡片，不会堆积。
 - 只接管 Harness 自己发出的通知（标题含 `正在申请权限`、`模型在等你回答`、`对话完成`、`生成失败`、`输出被截断`）；页面上其它来源的通知原样放行，不会附加任何行为。
 - 不修改 `dsh-pet` 等通知发送方：只在通知对象上追加一个 `click` 监听，原有 `onclick` 逻辑照常执行。
 - 只在桌面应用内生效；浏览器标签页里完全不做干预（由浏览器自己切换窗口/标签页）。
@@ -54,9 +55,9 @@
 - 同一请求的通知带稳定的 `tag`：发送方短时间内重复触发时，系统替换旧通知而不是叠加一屏；点击过的请求在 90 秒内不再弹出。
 - 通知正文在交给系统前会修复非法 UTF-16 代理项并截断到安全长度，避免构造通知时报 `InvalidStateError`。
 - 桌面端审批通知由本插件独家接管：`dsh-pet` 的审批副本会被客户端直接丢弃，通知栏只保留一条带按钮的 toast，不会出现两条重复通知。
-- 原生 toast 路径按严重级加前缀，正文取请求原因前 64 字；toast 左侧显示鲸鱼头像，标题栏图标为 DSH 应用图标，按钮使用系统默认（灰色）样式，底部不再显示 attribution 文字。点击正文回到 DSH，点击按钮直接完成授权（不切换窗口）。
-- 两条通知路径分工：Windows 桌面端审批由 Host 弹原生 toast（带按钮）；提问与完成类通知仍来自 `dsh-pet`，由客户端改写文案并补点击聚焦。
-- 点击通知的正文只负责回到 DSH，不会替用户做决定；需要授权时请按「允许一次」或「拒绝」按钮。
+- 原生 toast 路径按严重级加前缀，正文取请求原因前 64 字；toast 左侧显示鲸鱼头像，标题栏图标为 DSH 应用图标，按钮使用系统默认（灰色）样式，底部不显示 attribution 文字。点击正文回到 DSH 并关闭 toast，点击按钮直接完成授权（不切换窗口）。
+- 两条通知路径分工：Windows 桌面端审批由 Host 转发给应用内卡片并弹原生 toast；提问与完成类通知仍来自 `dsh-pet`，由客户端改写文案并补点击聚焦。
+- 应用内审批卡与 toast 是同一个请求的两条入口：在任一处允许/拒绝都会结束该请求；只关掉 toast（点正文或回到窗口）不会替你做决定。
 
 ## 为什么需要它
 
@@ -103,18 +104,16 @@ agent 请求审批
    │
    ▼
 index.js（Host，global + prepend 监听 approval/request）
-   生成随机 id + token
-   用 PowerShell + WinRT 弹原生 toast（两个按钮，协议激活）
-   │  ── 30 秒内没操作 ──▶ 关闭 toast，next() 回退到应用内审批卡片
-   ▼
-用户点击「允许一次 / 拒绝」
-   协议激活 dsh-window-focus:allow|reject?id=…&token=…&endpoint=…
+   ① 立即 next() —— 应用内审批卡先出现，不会因为没点通知而错过
+   ② 生成随机 id + token，用 PowerShell + WinRT 弹原生 toast（两个按钮，协议激活）
    │
-   ▼
-scripts/toast-action.vbs（wscript 启动，隐藏窗口，不弹终端）
-   → toast-action.ps1 解析 URI，POST /dsh-window-focus/result   │  宿主校验 id + token，决定 outcome
-   ▼
-返回 allowed-once / rejected；只有点击通知正文才把窗口带到前台
+   ├─ 点「允许一次 / 拒绝」 ──▶ 协议激活 dsh-window-focus:allow|reject?id=…&token=…
+   │                              └─▶ toast-action.vbs → toast-action.ps1 → POST /dsh-window-focus/result
+   │                                  宿主校验 token，返回 allowed-once / rejected（不切窗口）
+   │
+   ├─ 点 toast 正文 ──▶ POST /result（decision=open）→ 聚焦窗口 + 关闭 toast；审批卡片保留
+   ├─ 回到应用窗口（focus 事件）──▶ POST /dsh-window-focus/dismiss → 关闭 toast；审批卡片保留
+   └─ 30 秒没操作 ──▶ 关闭 toast；审批卡片保留
 ```
 
 - toast 的 AppUserModelId 为 `Fanrongbo.DSH.WindowFocus`，协议 `dsh-window-focus:` 由 `wscript.exe` 启动 `scripts/toast-action.vbs`，再用隐藏窗口调起 `toast-action.ps1`（直接启动 powershell.exe 会闪一个终端窗口）；
@@ -287,9 +286,11 @@ await fetch('/dsh-window-focus/focus', { method: 'POST' }).then(r => r.json())
 **D. 审批按钮测试（1.1.0+）**
 
 1. 触发任意一次需要审批的操作（或让 agent 执行一条会请求权限的命令）；
-2. 通知应以原生 toast 形式出现，带「允许一次」「拒绝」两个按钮，标题前有等级前缀；
-3. 点「允许一次」→ 审批直接通过（窗口不切换，可继续做别的事）；点「拒绝」→ 审批被拒绝；点通知正文 → 回到 DSH 应用内卡片；
-4. 什么都不点，等 30 秒 → toast 消失，应用内出现审批卡片。
+2. **应用内应立即出现审批卡片**（不用点通知）；随后通知栏出现原生 toast，带「允许一次」「拒绝」两个按钮，标题前有等级前缀；
+3. 点 toast 上的「允许一次」/「拒绝」→ 审批直接结束（窗口不切换，可继续做别的事）；应用内卡片同步消失；
+4. 点 toast 正文 → 窗口回到前台、toast 关闭，但审批卡片仍留在应用内，由你在卡片上决定；
+5. 不点通知，直接从任务栏/快捷方式/Alt-Tab 回到窗口 → toast 自动关闭，审批卡片仍可用；
+6. 什么都不点，等 30 秒 → toast 消失，审批卡片仍在应用内。
 
 Host 侧日志：`%TEMP%\dsh-window-focus-debug.log`（记录 `apply`、`approval`、`toast exit`、`finish`）。
 
@@ -396,7 +397,7 @@ node --check client.js
 - toast 按钮外观由 Windows 决定，**无法自定义颜色**；系统只提供默认（灰）、`Success`（绿）、`Critical`（红）三种样式，本插件使用系统默认灰色。应用内审批卡片的白色按钮无法复制到系统通知里。
 - toast 通过 HKCU 的 AppUserModelId + 自定义协议实现（未打包应用没有包标识）。个别系统上通知可能显示在「Windows PowerShell」分组下，或需要在系统通知设置里允许该来源。
 - 通知边框颜色无法从插件设置，等级用标题前缀（`👁️` / `✏️` / `⚠️` / `⛔`）表示。
-- 同一时间只保留一个可操作 toast：上一个未决时，新审批直接回退到应用内卡片；toast 超过 30 秒未操作也会回退。
+- 同一时间只保留一个可操作 toast：上一个未决时，新审批只进入应用内卡片；toast 超过 30 秒未操作、点正文或回到应用窗口时都会关闭，但审批卡片始终保留，直到你在应用内或 toast 上选择。
 
 ## 许可证
 

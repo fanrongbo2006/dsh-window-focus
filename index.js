@@ -6,6 +6,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const ROUTE = '/dsh-window-focus/result'
 const FOCUS_ROUTE = '/dsh-window-focus/focus'
+const DISMISS_ROUTE = '/dsh-window-focus/dismiss'
 const APP_ID = 'Fanrongbo.DSH.WindowFocus'
 const PROTOCOL = 'dsh-window-focus'
 const APPROVAL_TIMEOUT_MS = 30000
@@ -281,8 +282,19 @@ export function apply(ctx) {
 
   const onApproval = async (request, next) => {
     debug(`approval tool=${request.toolName} pending=${pending.size}`)
-    // One actionable toast at a time; further requests fall back to the in-app card.
-    if (pending.size > 0) return next()
+    // The in-app approval card must always appear: forward first, then offer a
+    // toast as a second way to answer the same request.
+    const sessionResult = Promise.resolve()
+      .then(() => next())
+      .then((value) => ({ source: 'session', value }))
+      .catch(() => ({ source: 'session', value: undefined }))
+
+    // One actionable toast at a time; further requests only get the in-app card.
+    if (pending.size > 0) {
+      const early = await sessionResult
+      return early.value
+    }
+
     const id = randomUUID()
     const token = randomBytes(16).toString('hex')
     const endpoint = (() => {
@@ -292,36 +304,52 @@ export function apply(ctx) {
         return undefined
       }
     })()
-    if (!endpoint) return next()
+    if (!endpoint) {
+      const early = await sessionResult
+      return early.value
+    }
 
     const level = severityOf(request.toolName, request.reason)
     const title = `${severityPrefix(level)}DeepSeek Harness · 权限请求`
     const body = shorten(request.reason) || `工具「${request.toolName}」请求权限`
 
-    const outcome = await new Promise((resolve) => {
-      const timer = setTimeout(() => {
-        debug(`timeout id=${id}`)
-        pending.delete(id)
-        closeToast(id)
-        resolve(undefined)
-      }, APPROVAL_TIMEOUT_MS)
-      pending.set(id, {
-        token,
-        timer,
-        resolve: (value) => {
-          clearTimeout(timer)
-          resolve(value)
-        },
-      })
-      showToast({ id, title, body, endpoint, token })
+    let resolveToast
+    const toastResult = new Promise((resolve) => {
+      resolveToast = resolve
     })
+    const timer = setTimeout(() => {
+      debug(`timeout id=${id}`)
+      closeToast(id)
+      resolveToast({ source: 'toast', value: undefined })
+    }, APPROVAL_TIMEOUT_MS)
+    pending.set(id, {
+      token,
+      timer,
+      resolve: (value) => {
+        clearTimeout(timer)
+        resolveToast({ source: 'toast', value })
+      },
+    })
+    showToast({ id, title, body, endpoint, token })
 
-    if (outcome === OUTCOME_ALLOW || outcome === OUTCOME_REJECT) {
-      // Only the notification body (decision "open") raises the window; buttons
-      // resolve the approval in place so the user can keep working elsewhere.
-      return outcome
+    const first = await Promise.race([sessionResult, toastResult])
+    const entry = pending.get(id)
+    if (entry) {
+      clearTimeout(entry.timer)
+      pending.delete(id)
     }
-    return next()
+
+    if (first.source === 'session') {
+      closeToast(id)
+      return first.value
+    }
+    if (first.value === OUTCOME_ALLOW || first.value === OUTCOME_REJECT) {
+      return first.value
+    }
+    // The toast was dismissed or its body was clicked: keep the in-app card open
+    // and let the user decide there.
+    const decision = await sessionResult
+    return decision.value
   }
 
   ctx.effect(() => {
@@ -367,7 +395,10 @@ export function apply(ctx) {
         return
       }
       if (body.decision === 'open') {
-        finish(body.id, undefined)
+        // Body click only raises the window: the in-app card must stay open so
+        // the user can decide there.
+        closeToast(body.id)
+        entry.resolve('open')
         focusDesktopWindow()
         sendJson(res, 200, { ok: true, decision: 'open' })
         return
@@ -390,4 +421,24 @@ export function apply(ctx) {
       sendJson(res, 200, { ok: true })
     },
   }), 'dsh-window-focus: focus route')
+
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: DISMISS_ROUTE,
+    handler: async (req, res) => {
+      if (req.method !== 'POST') {
+        res.setHeader('allow', 'POST')
+        sendJson(res, 405, { ok: false, error: 'method-not-allowed' })
+        return
+      }
+      if (typeof req.resume === 'function') req.resume()
+      // The user came back to the app window: clear the toasts but keep the
+      // approvals pending so they can be answered in the in-app card.
+      for (const [id, entry] of pending) {
+        closeToast(id)
+        entry.resolve('dismiss')
+      }
+      sendJson(res, 200, { ok: true })
+    },
+  }), 'dsh-window-focus: dismiss route')
 }
