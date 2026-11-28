@@ -2,19 +2,22 @@ import { spawn } from 'node:child_process'
 import { randomBytes, randomUUID } from 'node:crypto'
 import { appendFileSync, existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const ROUTE = '/dsh-window-focus/result'
 const FOCUS_ROUTE = '/dsh-window-focus/focus'
 const APP_ID = 'Fanrongbo.DSH.WindowFocus'
 const PROTOCOL = 'dsh-window-focus'
 const APPROVAL_TIMEOUT_MS = 30000
+const ACTIVE_KEY = Symbol.for('dsh-window-focus.active-instance')
 
 const OUTCOME_ALLOW = 'allowed-once'
 const OUTCOME_REJECT = 'rejected'
 
 const PACKAGE_DIR = dirname(fileURLToPath(import.meta.url))
 const SCRIPTS_DIR = join(PACKAGE_DIR, 'scripts')
+const APP_ICON = join(PACKAGE_DIR, 'assets', 'dsh.png')
+const AVATAR_ICON = join(PACKAGE_DIR, 'assets', 'whale.png')
 const TOAST_SCRIPT = join(SCRIPTS_DIR, 'toast.ps1')
 const ACTION_LAUNCHER = join(SCRIPTS_DIR, 'toast-action.vbs')
 const CLOSE_SCRIPT = join(SCRIPTS_DIR, 'close-toast.ps1')
@@ -112,13 +115,20 @@ function registerAppId() {
   runReg([
     'add',
     `HKCU\\Software\\Classes\\AppUserModelId\\${APP_ID}`,
-    '/v', 'DisplayName', '/d', 'DeepSeek Harness 审批通知', '/f',
+    '/v', 'DisplayName', '/d', 'DeepSeek Harness', '/f',
   ])
   runReg([
     'add',
     `HKCU\\Software\\Classes\\AppUserModelId\\${APP_ID}`,
     '/v', 'ShowInSettings', '/d', '1', '/f',
   ])
+  if (existsSync(APP_ICON)) {
+    runReg([
+      'add',
+      `HKCU\\Software\\Classes\\AppUserModelId\\${APP_ID}`,
+      '/v', 'IconUri', '/d', pathToFileURL(APP_ICON).href, '/f',
+    ])
+  }
 }
 
 function severityOf(toolName, reason) {
@@ -205,6 +215,9 @@ function showToast({ id, title, body, endpoint, token }) {
     '-RejectLabel', '拒绝',
     '-Tag', id,
   ]
+  if (existsSync(AVATAR_ICON)) {
+    args.push('-IconPath', AVATAR_ICON)
+  }
   if (process.platform !== 'win32') return
   try {
     const child = spawn(powershellPath(), args, {
@@ -240,6 +253,16 @@ function closeToast(id) {
 export function apply(ctx) {
   debug(`apply electron=${String(process.versions.electron)} runAsNode=${String(process.env.ELECTRON_RUN_AS_NODE)}`)
   if (!isDesktopHost() || process.platform !== 'win32') return
+  if (globalThis[ACTIVE_KEY] === true) {
+    // The market and the profile bundle can load this package through two
+    // entries in the same host process; only the first one may own the routes.
+    debug('already active, skipping duplicate apply')
+    return
+  }
+  globalThis[ACTIVE_KEY] = true
+  ctx.effect(() => () => {
+    globalThis[ACTIVE_KEY] = false
+  }, 'dsh-window-focus: singleton')
 
   registerProtocol()
   registerAppId()

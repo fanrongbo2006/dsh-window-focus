@@ -1,5 +1,5 @@
 param(
-  [string]$AppId = 'Fanrongbo.DSH.NotifyActions',
+  [string]$AppId = 'Fanrongbo.DSH.WindowFocus',
   [string]$Title = 'DeepSeek Harness',
   [string]$Body = '',
   [Parameter(Mandatory = $true)][string]$AllowUri,
@@ -8,7 +8,9 @@ param(
   [string]$AllowLabel = 'Allow once',
   [string]$RejectLabel = 'Reject',
   [string]$Tag = '',
-  [string]$Level = '1'
+  [string]$Level = '1',
+  [string]$IconPath = '',
+  [switch]$DryRun
 )
 
 $ErrorActionPreference = 'Stop'
@@ -27,17 +29,23 @@ public static extern void SetCurrentProcessExplicitAppUserModelID(string appId);
 
 $esc = { param($s) $s -replace '&', '&amp;' -replace '<', '&lt;' -replace '>', '&gt;' -replace '"', '&quot;' }
 
+$imageXml = ''
+if ($IconPath -and (Test-Path -LiteralPath $IconPath)) {
+  $iconUri = ([System.Uri](Resolve-Path -LiteralPath $IconPath).Path).AbsoluteUri
+  $imageXml = '      <image placement="appLogoOverride" hint-crop="circle" src="' + (& $esc $iconUri) + '" />'
+}
+
 $xmlString = @"
-<toast activationType="protocol" launch="$(& $esc $OpenUri)" duration="long" useButtonStyle="true">
+<toast activationType="protocol" launch="$(& $esc $OpenUri)" duration="long">
   <visual>
     <binding template="ToastGeneric">
       <text>$(& $esc $Title)</text>
       <text>$(& $esc $Body)</text>
-      <text placement="attribution">DeepSeek Harness</text>
+$imageXml
     </binding>
   </visual>
   <actions>
-    <action content="$(& $esc $AllowLabel)" arguments="$(& $esc $AllowUri)" activationType="protocol" hint-buttonStyle="Success" />
+    <action content="$(& $esc $AllowLabel)" arguments="$(& $esc $AllowUri)" activationType="protocol" />
     <action content="$(& $esc $RejectLabel)" arguments="$(& $esc $RejectUri)" activationType="protocol" />
   </actions>
 </toast>
@@ -45,6 +53,7 @@ $xmlString = @"
 
 $xml = New-Object Windows.Data.Xml.Dom.XmlDocument
 $xml.LoadXml($xmlString)
+if ($DryRun) { Write-Output 'ok'; return }
 $toast = New-Object Windows.UI.Notifications.ToastNotification $xml
 if ($Tag) { $toast.Tag = $Tag }
 $notifier = [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($AppId)

@@ -18,6 +18,7 @@
     "scripts/toast-action.ps1",
     "scripts/toast-action.vbs",
     "scripts/close-toast.ps1",
+    "assets/",
     "locale/*.json",
     "icon.svg",
     "README.md",
