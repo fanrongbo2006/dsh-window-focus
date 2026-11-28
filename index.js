@@ -270,6 +270,7 @@ export function apply(ctx) {
 
     const outcome = await new Promise((resolve) => {
       const timer = setTimeout(() => {
+        debug(`timeout id=${id}`)
         pending.delete(id)
         closeToast(id)
         resolve(undefined)
