@@ -342,7 +342,7 @@ function closeToast(id, { noClear = false, tag } = {}) {
   }
 }
 
-function showQuestionToast(origin, { id, title, body }) {
+function showQuestionToast(origin, { id, title, body, tag }) {
   if (!existsSync(TOAST_SCRIPT) || !origin) return false
   if (process.env.DSH_WINDOW_FOCUS_TEST === '1') return true
   const params = new URLSearchParams({ endpoint: `${origin}${FOCUS_ROUTE}` })
@@ -356,7 +356,7 @@ function showQuestionToast(origin, { id, title, body }) {
     '-Title', title,
     '-Body', body,
     '-OpenUri', openUri,
-    '-Tag', toastTag(id),
+    '-Tag', tag ?? toastTag(id),
   ]
   if (existsSync(AVATAR_ICON)) args.push('-IconPath', AVATAR_ICON)
   debug(`question toast spawn title=${title}`)
@@ -409,6 +409,60 @@ export function apply(ctx) {
     while (decisions.length > 0 && decisions[0].at < cutoff) decisions.shift()
     if (decisions.length > 50) decisions.splice(0, decisions.length - 50)
   }
+  // Unanswered questions are re-notified the same way as approvals: while the
+  // user is away a single toast is easy to miss.
+  const questions = new Map()
+
+  const finishQuestion = (id) => {
+    const entry = questions.get(id)
+    if (!entry) return
+    questions.delete(id)
+    entry.done = true
+    if (entry.timer !== null) {
+      clearTimeout(entry.timer)
+      entry.timer = null
+    }
+    closeToast(id, { noClear: true, tag: entry.tag })
+  }
+  const scheduleQuestionReminder = (entry) => {
+    if (entry.done || entry.timer !== null || entry.reminders >= REMINDER_LIMIT) return
+    entry.timer = setTimeout(() => {
+      entry.timer = null
+      if (entry.done) return
+      if (windowFocused) {
+        scheduleQuestionReminder(entry)
+        return
+      }
+      entry.reminders += 1
+      closeToast(entry.id, { noClear: true, tag: entry.tag })
+      entry.tag = reminderTag(entry.id, entry.reminders)
+      if (!showQuestionToast(entry.origin, {
+        id: entry.id,
+        title: entry.title,
+        body: entry.body,
+        tag: entry.tag,
+      })) return
+      debug(`question reminder ${entry.reminders} id=${entry.id}`)
+      scheduleQuestionReminder(entry)
+    }, REMINDER_DELAY_MS)
+  }
+  const notifyQuestions = () => {
+    for (const entry of questions.values()) {
+      if (entry.done) continue
+      if (!windowFocused) scheduleQuestionReminder(entry)
+    }
+  }
+  const closeQuestionToasts = () => {
+    for (const entry of questions.values()) {
+      if (entry.done) continue
+      if (entry.timer !== null) {
+        clearTimeout(entry.timer)
+        entry.timer = null
+      }
+      closeToast(entry.id, { noClear: true, tag: entry.tag })
+    }
+  }
+
   // The browser half reports whether the app window is in the foreground; when
   // the user is already looking at the in-app card a toast would be noise.
   let windowFocused = false
@@ -631,26 +685,46 @@ export function apply(ctx) {
   ctx.effect(() => {
     const dispose = ctx.on('user-questions/request', (request, next) => {
       const id = randomUUID()
+      const entry = {
+        id,
+        origin: '',
+        title: '❓ 需要你回答',
+        body: '模型在等你回答一个问题，点击回到 DeepSeek Harness。',
+        tag: toastTag(id),
+        reminders: 0,
+        timer: null,
+        done: false,
+      }
+      questions.set(id, entry)
       try {
-        const origin = ctx.webServer.getOrigin()
-        showQuestionToast(origin, {
+        entry.origin = ctx.webServer.getOrigin()
+        showQuestionToast(entry.origin, {
           id,
-          title: '❓ 需要你回答',
-          body: '模型在等你回答一个问题，点击回到 DeepSeek Harness。',
+          title: entry.title,
+          body: entry.body,
+          tag: entry.tag,
         })
         debug(`question requested id=${id}`)
+        scheduleQuestionReminder(entry)
       } catch {
         // no toast: the in-app question UI is still there
       }
       const answered = Promise.resolve().then(() => next())
       answered.then(
-        () => closeToast(id, { noClear: true }),
-        () => closeToast(id, { noClear: true }),
+        () => finishQuestion(id),
+        () => finishQuestion(id),
       )
       return answered
     }, { global: true, prepend: true })
     debug(`question listener registered type=${typeof dispose}`)
-    return () => dispose?.()
+    return () => {
+      dispose?.()
+      for (const entry of questions.values()) {
+        entry.done = true
+        if (entry.timer !== null) clearTimeout(entry.timer)
+      }
+      questions.clear()
+    }
   }, 'dsh-window-focus: question notifications')
 
   ctx.effect(() => ctx.webServer.register({
@@ -759,11 +833,13 @@ export function apply(ctx) {
       if (windowFocused) {
         // Back in the app: drop the toasts, keep the requests as cards.
         promoteAll()
+        closeQuestionToasts()
       } else {
         // The user left while the app still has unanswered requests: make sure
         // each one now has a notification, including requests that arrived
         // while the window was focused and therefore had no toast yet.
         for (const entry of pending.values()) entry.notify?.()
+        notifyQuestions()
       }
       sendJson(res, 200, { ok: true })
     },
