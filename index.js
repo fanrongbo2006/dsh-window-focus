@@ -265,6 +265,8 @@ const toastTag = (id) => String(id).replaceAll('-', '').slice(0, 16)
 
 function showToast({ id, title, body, endpoint, token }) {
   if (!existsSync(TOAST_SCRIPT)) return false
+  // Tests run without a desktop session; they assert the decision flow only.
+  if (process.env.DSH_WINDOW_FOCUS_TEST === '1') return true
   if (process.platform !== 'win32') return false
   const query = (action) => {
     const params = new URLSearchParams({ id, token, endpoint })
@@ -305,6 +307,7 @@ function showToast({ id, title, body, endpoint, token }) {
 
 function closeToast(id, { noClear = false } = {}) {
   if (!existsSync(CLOSE_SCRIPT)) return
+  if (process.env.DSH_WINDOW_FOCUS_TEST === '1') return
   try {
     const args = [
       '-NoProfile',
@@ -326,6 +329,7 @@ function closeToast(id, { noClear = false } = {}) {
 
 function showQuestionToast(origin, { id, title, body }) {
   if (!existsSync(TOAST_SCRIPT) || !origin) return false
+  if (process.env.DSH_WINDOW_FOCUS_TEST === '1') return true
   const params = new URLSearchParams({ endpoint: `${origin}${FOCUS_ROUTE}` })
   const openUri = `${PROTOCOL}:focus?${params.toString()}`
   const args = [
@@ -410,14 +414,6 @@ export function apply(ctx) {
       return sessionPromise
     }
 
-    // While the user is looking at the app the card is enough. Otherwise every
-    // request gets its own toast: several approvals can be queued in the
-    // notification center and answered independently.
-    if (windowFocused) {
-      const early = await startSession()
-      return early.value
-    }
-
     const id = randomUUID()
     const token = randomBytes(16).toString('hex')
     const endpoint = (() => {
@@ -436,13 +432,6 @@ export function apply(ctx) {
     const title = `${severityPrefix(level)}正在申请权限`
     const body = shorten(request.reason) || `工具「${request.toolName}」请求权限`
 
-    if (!showToast({ id, title, body, endpoint, token })) {
-      // No toast script (or not Windows): the in-app card is the only path.
-      const early = await startSession()
-      return early.value
-    }
-    debug(`toast shown title=${title}`)
-
     let resolveToast
     const toastResult = new Promise((resolve) => {
       resolveToast = resolve
@@ -452,34 +441,70 @@ export function apply(ctx) {
       promoted = () => resolve(startSession())
     })
     let promotedOnce = false
+    let toastShown = false
     let toastClosed = false
+    let timer = null
+    const clearTimer = () => {
+      if (timer !== null) {
+        clearTimeout(timer)
+        timer = null
+      }
+    }
     // Windows clears the app's whole notification group on Remove, so closing
     // the same toast twice would wipe unrelated notifications. Close once.
     const closeOnce = () => {
       if (toastClosed) return
       toastClosed = true
-      closeToast(id)
+      if (toastShown) closeToast(id)
     }
     const promoteOnce = () => {
       if (promotedOnce) return
       promotedOnce = true
+      clearTimer()
       closeOnce()
       promoted()
     }
-    const timer = setTimeout(() => {
-      debug(`timeout id=${id}`)
-      promoteOnce()
-      promoteAll()
-    }, APPROVAL_TIMEOUT_MS)
+    // The toast is shown when the request arrives while the app is in the
+    // background. A request that arrives while the user is looking at the
+    // in-app card stays registered here without a toast, so it can still be
+    // surfaced when the window later loses focus.
+    const notify = () => {
+      if (toastShown || promotedOnce) return
+      toastShown = true
+      if (!showToast({ id, title, body, endpoint, token })) {
+        // No toast script (or not Windows): the in-app card is the only path.
+        toastShown = false
+        promoteOnce()
+        return
+      }
+      debug(`toast shown title=${title}`)
+      timer = setTimeout(() => {
+        debug(`timeout id=${id}`)
+        promoteOnce()
+        promoteAll()
+      }, APPROVAL_TIMEOUT_MS)
+    }
     pending.set(id, {
       token,
-      timer,
+      get timer() {
+        return timer
+      },
+      notify,
       settle: (value) => {
-        clearTimeout(timer)
+        clearTimer()
         resolveToast({ source: 'toast', value })
       },
       promote: promoteOnce,
     })
+
+    if (windowFocused) {
+      // The user is already looking at the app: show the in-app card right away
+      // and keep the request in `pending` so the next blur can notify.
+      startSession()
+      debug(`card only id=${id}`)
+    } else {
+      notify()
+    }
 
     const first = await Promise.race([sessionPromise ?? new Promise(() => {}), promotedResult, toastResult])
     const entry = pending.get(id)
@@ -654,8 +679,16 @@ export function apply(ctx) {
         return
       }
       windowFocused = body.focused
-      debug(`window focused=${windowFocused}`)
-      if (windowFocused) promoteAll()
+      debug(`window focused=${windowFocused} pending=${pending.size}`)
+      if (windowFocused) {
+        // Back in the app: drop the toasts, keep the requests as cards.
+        promoteAll()
+      } else {
+        // The user left while the app still has unanswered requests: make sure
+        // each one now has a notification, including requests that arrived
+        // while the window was focused and therefore had no toast yet.
+        for (const entry of pending.values()) entry.notify?.()
+      }
       sendJson(res, 200, { ok: true })
     },
   }), 'dsh-window-focus: state route')
