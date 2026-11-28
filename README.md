@@ -27,7 +27,7 @@
 ## 功能
 
 - 点击 Harness 的系统通知 → 恢复最小化 / 从托盘显示 / 把窗口提到前台并聚焦。
-- **审批通知可直接点「允许一次 / 拒绝」**（Windows 桌面端 1.1.0+）：宿主先收到审批请求，弹出一条原生 toast，按钮通过自定义协议回调 Host 完成授权，并同时把窗口带到前台。
+- **审批通知可直接点「允许一次 / 拒绝」**（Windows 桌面端 1.1.0+）：宿主先收到审批请求，弹出一条原生 toast，按钮通过自定义协议回调 Host 完成授权；按钮只完成授权、不切换窗口，点通知正文才回到 DSH。
 - 30 秒内没有选择时，toast 自动关闭，审批卡片回退到应用内等待处理；已有 toast 未决时，新请求直接走应用内卡片，不会堆积。
 - 只接管 Harness 自己发出的通知（标题含 `正在申请权限`、`模型在等你回答`、`对话完成`、`生成失败`、`输出被截断`）；页面上其它来源的通知原样放行，不会附加任何行为。
 - 不修改 `dsh-pet` 等通知发送方：只在通知对象上追加一个 `click` 监听，原有 `onclick` 逻辑照常执行。
@@ -113,7 +113,7 @@ index.js（Host，global + prepend 监听 approval/request）
 scripts/toast-action.vbs（wscript 启动，隐藏窗口，不弹终端）
    → toast-action.ps1 解析 URI，POST /dsh-window-focus/result   │  宿主校验 id + token，决定 outcome
    ▼
-返回 allowed-once / rejected，同时把窗口带到前台
+返回 allowed-once / rejected；只有点击通知正文才把窗口带到前台
 ```
 
 - toast 的 AppUserModelId 为 `Fanrongbo.DSH.WindowFocus`，协议 `dsh-window-focus:` 由 `wscript.exe` 启动 `scripts/toast-action.vbs`，再用隐藏窗口调起 `toast-action.ps1`（直接启动 powershell.exe 会闪一个终端窗口）；
@@ -287,7 +287,7 @@ await fetch('/dsh-window-focus/focus', { method: 'POST' }).then(r => r.json())
 
 1. 触发任意一次需要审批的操作（或让 agent 执行一条会请求权限的命令）；
 2. 通知应以原生 toast 形式出现，带「允许一次」「拒绝」两个按钮，标题前有等级前缀；
-3. 点「允许一次」→ 审批直接通过，窗口被带到前台；点「拒绝」→ 审批被拒绝；
+3. 点「允许一次」→ 审批直接通过（窗口不切换，可继续做别的事）；点「拒绝」→ 审批被拒绝；点通知正文 → 回到 DSH 应用内卡片；
 4. 什么都不点，等 30 秒 → toast 消失，应用内出现审批卡片。
 
 Host 侧日志：`%TEMP%\dsh-window-focus-debug.log`（记录 `apply`、`approval`、`toast exit`、`finish`）。
@@ -390,6 +390,7 @@ node --check client.js
 - 若系统处于「阻止应用抢占前台」状态，聚焦可能被降级为任务栏闪烁；这与 Windows 的前台锁策略有关。
 - 多显示器 / 多虚拟桌面下，窗口会恢复并聚焦，但不会主动切换到它所在的虚拟桌面。
 - 通知栏里的「允许一次 / 拒绝」按钮只在 **Windows 桌面端 1.1.0+** 可用；浏览器版（`http://127.0.0.1:<端口>`）的 Web Notification 不支持按钮。
+- toast 按钮外观由 Windows 决定，**无法自定义颜色/白色填充**；系统只提供默认、`Success`（绿色）、`Critical`（红色）三种样式。应用内审批卡片的白色按钮样式无法复制到系统通知里。
 - toast 通过 HKCU 的 AppUserModelId + 自定义协议实现（未打包应用没有包标识）。个别系统上通知可能显示在「Windows PowerShell」分组下，或需要在系统通知设置里允许该来源。
 - 通知边框颜色无法从插件设置，等级用标题前缀（`👁️` / `✏️` / `⚠️` / `⛔`）表示。
 - 同一时间只保留一个可操作 toast：上一个未决时，新审批直接回退到应用内卡片；toast 超过 30 秒未操作也会回退。

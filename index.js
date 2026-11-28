@@ -294,7 +294,8 @@ export function apply(ctx) {
     })
 
     if (outcome === OUTCOME_ALLOW || outcome === OUTCOME_REJECT) {
-      focusDesktopWindow()
+      // Only the notification body (decision "open") raises the window; buttons
+      // resolve the approval in place so the user can keep working elsewhere.
       return outcome
     }
     return next()
