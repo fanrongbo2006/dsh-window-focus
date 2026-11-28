@@ -110,13 +110,13 @@ index.js（Host，global + prepend 监听 approval/request）
    协议激活 dsh-window-focus:allow|reject?id=…&token=…&endpoint=…
    │
    ▼
-scripts/toast-action.ps1 解析 URI，POST /dsh-window-focus/result
-   │  宿主校验 id + token，决定 outcome
+scripts/toast-action.vbs（wscript 启动，隐藏窗口，不弹终端）
+   → toast-action.ps1 解析 URI，POST /dsh-window-focus/result   │  宿主校验 id + token，决定 outcome
    ▼
 返回 allowed-once / rejected，同时把窗口带到前台
 ```
 
-- toast 的 AppUserModelId 为 `Fanrongbo.DSH.WindowFocus`，协议 `dsh-window-focus:` 指向本插件的 `toast-action.ps1`；
+- toast 的 AppUserModelId 为 `Fanrongbo.DSH.WindowFocus`，协议 `dsh-window-focus:` 由 `wscript.exe` 启动 `scripts/toast-action.vbs`，再用隐藏窗口调起 `toast-action.ps1`（直接启动 powershell.exe 会闪一个终端窗口）；
 - 结果路由校验一次性 token，外部网页无法伪造审批结果；
 - 同一时间只弹一个可操作 toast，避免多个审批堆叠。
 
@@ -334,6 +334,7 @@ Host 侧日志：`%TEMP%\dsh-window-focus-debug.log`（记录 `apply`、`approva
 | `index.js` | Host 半侧：拦截审批、弹原生 toast、注册 focus/result 路由、重新拉起桌面应用 |
 | `client.js` | 浏览器半侧：用 Proxy 包装 `window.Notification`，补点击监听、改写文案 |
 | `scripts/toast.ps1` | 用 WinRT 弹带按钮的 toast（协议激活） |
+| `scripts/toast-action.vbs` | 协议入口：wscript 启动，隐藏窗口调起 PowerShell（不弹终端） |
 | `scripts/toast-action.ps1` | 协议回调：解析按钮 URI，POST 结果到 Host |
 | `scripts/close-toast.ps1` | 超时或取消时关闭/清除通知 |
 | `cordis.patch.yml` | bundle 挂载声明，让 DSH 在启动时加载本插件 |

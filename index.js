@@ -16,7 +16,7 @@ const OUTCOME_REJECT = 'rejected'
 const PACKAGE_DIR = dirname(fileURLToPath(import.meta.url))
 const SCRIPTS_DIR = join(PACKAGE_DIR, 'scripts')
 const TOAST_SCRIPT = join(SCRIPTS_DIR, 'toast.ps1')
-const ACTION_SCRIPT = join(SCRIPTS_DIR, 'toast-action.ps1')
+const ACTION_LAUNCHER = join(SCRIPTS_DIR, 'toast-action.vbs')
 const CLOSE_SCRIPT = join(SCRIPTS_DIR, 'close-toast.ps1')
 
 export const name = 'dsh-window-focus'
@@ -38,6 +38,11 @@ function isDesktopHost() {
 function powershellPath() {
   const root = process.env.SystemRoot || 'C:\\Windows'
   return join(root, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+}
+
+function wscriptPath() {
+  const root = process.env.SystemRoot || 'C:\\Windows'
+  return join(root, 'System32', 'wscript.exe')
 }
 
 function resolveAppExecutable() {
@@ -89,7 +94,9 @@ function registerProtocol() {
   runReg([
     'add', `HKCU\\Software\\Classes\\${PROTOCOL}`, '/v', 'URL Protocol', '/d', '', '/f',
   ])
-  const command = `"${powershellPath()}" -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "${ACTION_SCRIPT}" "%1"`
+  // Launch through wscript.exe (GUI subsystem) with a hidden PowerShell worker:
+  // launching powershell.exe directly makes Windows flash a console window on click.
+  const command = `"${wscriptPath()}" //nologo "${ACTION_LAUNCHER}" "%1"`
   runReg([
     'add',
     `HKCU\\Software\\Classes\\${PROTOCOL}\\shell\\open\\command`,

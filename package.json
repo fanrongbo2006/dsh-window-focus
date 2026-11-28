@@ -16,6 +16,7 @@
     "cordis.patch.yml",
     "scripts/toast.ps1",
     "scripts/toast-action.ps1",
+    "scripts/toast-action.vbs",
     "scripts/close-toast.ps1",
     "locale/*.json",
     "icon.svg",
