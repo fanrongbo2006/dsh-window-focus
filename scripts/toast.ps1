@@ -28,7 +28,7 @@ public static extern void SetCurrentProcessExplicitAppUserModelID(string appId);
 $esc = { param($s) $s -replace '&', '&amp;' -replace '<', '&lt;' -replace '>', '&gt;' -replace '"', '&quot;' }
 
 $xmlString = @"
-<toast activationType="protocol" launch="$(& $esc $OpenUri)" duration="long">
+<toast activationType="protocol" launch="$(& $esc $OpenUri)" duration="long" useButtonStyle="true">
   <visual>
     <binding template="ToastGeneric">
       <text>$(& $esc $Title)</text>
@@ -37,7 +37,7 @@ $xmlString = @"
     </binding>
   </visual>
   <actions>
-    <action content="$(& $esc $AllowLabel)" arguments="$(& $esc $AllowUri)" activationType="protocol" />
+    <action content="$(& $esc $AllowLabel)" arguments="$(& $esc $AllowUri)" activationType="protocol" hint-buttonStyle="Success" />
     <action content="$(& $esc $RejectLabel)" arguments="$(& $esc $RejectUri)" activationType="protocol" />
   </actions>
 </toast>

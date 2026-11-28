@@ -5,12 +5,10 @@
  *
  * 1. Raises the desktop window when a DeepSeek Harness notification is
  *    clicked, so the app comes back to the foreground.
- * 2. Rewrites approval and question notifications before they reach the OS:
- *    approval bodies keep the tool name plus a shortened reason with an
- *    ellipsis, question bodies carry no question text at all, and a severity
- *    marker is prefixed to the title. Windows toast borders cannot be colored
- *    from the renderer, so severity travels in the title prefix; the sender's
- *    own icon (the whale) is preserved.
+ * 2. Rewrites question notifications before they reach the OS: the question
+ *    text is removed entirely. Approval notifications from dsh-pet are
+ *    suppressed on the desktop page because the host plugin already shows one
+ *    actionable toast (allow / reject) for the same request.
  *
  * Every other notification is constructed with its original arguments and is
  * never touched: the module must not take over unrelated notifications.
@@ -26,40 +24,7 @@ window.__ModuleLoader__.load({
     const APPROVAL_TITLE = '正在申请权限'
     const QUESTION_TITLE = '模型在等你回答'
     const DSH_TITLE = /(正在申请权限|模型在等你回答|对话完成|生成失败|输出被截断)/
-    const MAX_REASON = 48
     const MAX_BODY_BYTES = 1800
-
-    /**
-     * Severity is not carried by the approval event itself, so it has to be
-     * inferred from the two things the notification actually exposes: the tool
-     * name and the human-readable reason. The tool name is the stronger signal
-     * (a `Write` call is a local write even when the reason text is vague), so
-     * both are scored and the higher level wins.
-     * @type {Record<number, { level: number, prefix: string, color: string, glyph: string }>}
-     */
-    const LEVEL_STYLE = {
-      5: { level: 5, prefix: '⛔ ', color: '#e5484d', glyph: '!' },
-      4: { level: 4, prefix: '⚠️ ', color: '#f5a524', glyph: '!' },
-      3: { level: 3, prefix: '✏️ ', color: '#2fb36b', glyph: '+' },
-      2: { level: 2, prefix: '👁️ ', color: '#4c8dff', glyph: 'i' },
-      1: { level: 1, prefix: '', color: '#4c8dff', glyph: '' },
-    }
-
-    const REASON_RULES = [
-      { level: 5, test: /(ssh|私钥|凭证|凭据|密钥|token|password|安装插件|配置变更|profile|post\s|https?:\/\/|上传|外发|webhook)/i },
-      { level: 4, test: /(删除|删掉|移除|delete|rm\s|工作区外|outside the workspace)/i },
-      { level: 3, test: /(写入|创建|新建|修改|覆盖|write|create|mkdir|touch)/i },
-      { level: 2, test: /(读取|只读|查看|read|hosts)/i },
-    ]
-
-    const TOOL_RULES = [
-      { level: 5, test: /(web_?fetch|web_?search|browser|http|fetch|curl|download|upload|webhook|network|post)/i },
-      { level: 5, test: /(secret|credential|keychain|ssh|password|token|env|vault)/i },
-      { level: 5, test: /(plugin_?manager|install|profile|config|setting)/i },
-      { level: 3, test: /(bash|shell|pwsh|powershell|cmd|terminal|exec|run_?command|process)/i },
-      { level: 3, test: /(write|edit|multi_?edit|apply_?patch|create|mkdir|touch|notebook|delete|remove|move|copy|rename|patch)/i },
-      { level: 2, test: /(read|glob|grep|ls|list|view|cat|stat|find|search|dir|head|tail|open)/i },
-    ]
 
     /**
      * Notification body is a DOMString: a lone UTF-16 surrogate (which a naive
@@ -97,17 +62,6 @@ window.__ModuleLoader__.load({
         used += bytes
       }
       return result + '…'
-    }
-
-    function levelOf(rules, text) {
-      const hit = rules.find((rule) => rule.test.test(text))
-      return hit === undefined ? 1 : hit.level
-    }
-
-    function severityOf(toolName, reason) {
-      const toolLevel = levelOf(TOOL_RULES, toolName.trim())
-      const reasonLevel = levelOf(REASON_RULES, reason)
-      return LEVEL_STYLE[Math.max(toolLevel, reasonLevel)]
     }
 
     function hashCode(text) {
@@ -155,6 +109,12 @@ window.__ModuleLoader__.load({
       const heading = textOf(rawTitle)
       if (!DSH_TITLE.test(heading)) return null
 
+      if (heading.includes(APPROVAL_TITLE)) {
+        // The host already shows one actionable toast (allow / reject) for
+        // approvals; letting dsh-pet's copy through would ask twice.
+        return { suppress: true }
+      }
+
       if (heading.includes(QUESTION_TITLE)) {
         const body = '需要你回答一个问题，点击回到 DeepSeek Harness。'
         return {
@@ -163,26 +123,9 @@ window.__ModuleLoader__.load({
         }
       }
 
-      if (!heading.includes(APPROVAL_TITLE)) {
-        // Turn-finished and error notifications keep their text; only the
-        // click-to-focus behaviour applies to them.
-        return { title: heading, options: safeOptions(options, textOf(options?.body), 'dsh-window-focus:' + hashCode(heading + textOf(options?.body))) }
-      }
-
-      const body = textOf(options?.body)
-      const matched = /^工具「([\s\S]*?)」：([\s\S]*)$/.exec(body)
-      const toolName = matched ? matched[1] : ''
-      const reason = matched ? matched[2] : body
-      const severity = severityOf(toolName, reason)
-      const shortened = shorten(reason, MAX_REASON)
-      const nextBody = toolName === ''
-        ? shortened
-        : '工具「' + toolName + '」：' + shortened
-      const tag = 'dsh-window-focus:approval:' + hashCode(toolName + '\u0000' + reason)
-      const nextOptions = safeOptions(options, nextBody, tag)
-
-      // Keep the sender's own icon (dsh-pet's whale); severity lives in the title.
-      return { title: severity.prefix + heading, options: nextOptions }
+      // Turn-finished and error notifications keep their text; only the
+      // click-to-focus behaviour applies to them.
+      return { title: heading, options: safeOptions(options, textOf(options?.body), 'dsh-window-focus:' + hashCode(heading + textOf(options?.body))) }
     }
 
     function requestFocus() {
@@ -244,9 +187,16 @@ window.__ModuleLoader__.load({
               // Unrelated notification: construct it exactly as the caller did.
               return Reflect.construct(target, args)
             }
+            if (decorated.suppress === true) {
+              // Approval duplicates are owned by the host's actionable toast.
+              return silentStub()
+            }
 
             const tag = typeof decorated.options.tag === 'string' ? decorated.options.tag : undefined
-            if (tag !== undefined && mutedTag(tag)) {
+            // Only questions participate in click muting: turn-finished
+            // notifications legitimately repeat with identical text.
+            const mutable = tag !== undefined && tag.startsWith('dsh-window-focus:question:')
+            if (mutable && mutedTag(tag)) {
               // The user already clicked this request; do not pop it again.
               return silentStub()
             }
