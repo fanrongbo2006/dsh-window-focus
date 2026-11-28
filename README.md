@@ -159,6 +159,13 @@ dsh plugin --profile desktop add dsh-window-focus
 
 > 国内网络默认走 npm 镜像，镜像的 `latest` 偶尔会滞后几分钟；如果报 404，稍等或改用方式二手动安装。
 
+### 在插件市场里一键安装 / 一键关闭
+
+- **一键安装**：打开 **设置 → 插件市场**，搜索 `dsh-window-focus`，点「安装」。市场会按 `npm → GitHub Release → 仓库源码` 的顺序取包；安装完重启应用。
+- **一键关闭 / 恢复**：打开 **设置 → 插件市场 → 已安装**，在 `dsh-window-focus` 这一行的末尾找到开关，关闭即暂停（不会删除文件，审批恢复成 DSH 原生样式），再打开即恢复。也可以在「已安装」里用行尾 `···` 菜单卸载。
+- 插件已被 [awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin) 收录，分类为 `notify`；市场条目随 npm 上最新版本更新。
+
+
 ### 方式二：手动安装（离线可用）
 
 #### 0. 准备
