@@ -11,6 +11,13 @@ const STATE_ROUTE = '/dsh-window-focus/state'
 const APP_ID = 'Fanrongbo.DSH.WindowFocus'
 const PROTOCOL = 'dsh-window-focus'
 const APPROVAL_TIMEOUT_MS = 30000
+// Unanswered approvals are re-notified a few times: once is easy to miss when
+// the user has just stepped away, but a notification every minute forever is
+// noise. After the limit the in-app card is the remaining reminder.
+const REMINDER_DELAY_MS = Number(process.env.DSH_WINDOW_FOCUS_REMIND_MS) > 0
+  ? Number(process.env.DSH_WINDOW_FOCUS_REMIND_MS)
+  : 40000
+const REMINDER_LIMIT = 3
 const ACTIVE_KEY = Symbol.for('dsh-window-focus.active-instance')
 
 const OUTCOME_ALLOW = 'allowed-once'
@@ -262,8 +269,11 @@ function hasJsonContentType(req) {
 // Windows limits a toast Tag to 16 characters, so the 36-char request id has
 // to be shortened consistently for both Show and History.Remove.
 const toastTag = (id) => String(id).replaceAll('-', '').slice(0, 16)
+// Windows tags are limited to 16 characters; reminders need their own tag so
+// the replaced toast alerts again instead of silently updating in the center.
+const reminderTag = (id, attempt) => `${String(id).replaceAll('-', '').slice(0, 14)}${String(attempt).padStart(2, '0')}`
 
-function showToast({ id, title, body, endpoint, token }) {
+function showToast({ id, title, body, endpoint, token, tag }) {
   if (!existsSync(TOAST_SCRIPT)) return false
   // Tests run without a desktop session; they assert the decision flow only.
   if (process.env.DSH_WINDOW_FOCUS_TEST === '1') return true
@@ -285,7 +295,7 @@ function showToast({ id, title, body, endpoint, token }) {
     '-OpenUri', query('open'),
     '-AllowLabel', '允许一次',
     '-RejectLabel', '拒绝',
-    '-Tag', toastTag(id),
+    '-Tag', tag ?? toastTag(id),
   ]
   if (existsSync(AVATAR_ICON)) {
     args.push('-IconPath', AVATAR_ICON)
@@ -305,7 +315,7 @@ function showToast({ id, title, body, endpoint, token }) {
   }
 }
 
-function closeToast(id, { noClear = false } = {}) {
+function closeToast(id, { noClear = false, tag } = {}) {
   if (!existsSync(CLOSE_SCRIPT)) return
   if (process.env.DSH_WINDOW_FOCUS_TEST === '1') return
   try {
@@ -315,12 +325,12 @@ function closeToast(id, { noClear = false } = {}) {
       '-WindowStyle', 'Hidden',
       '-File', CLOSE_SCRIPT,
       '-AppId', APP_ID,
-      '-Tag', toastTag(id),
+      '-Tag', tag ?? toastTag(id),
     ]
     if (noClear) args.push('-NoClear')
     const child = spawn(powershellPath(), args, { stdio: 'ignore', windowsHide: true })
     child.on('error', () => {})
-    child.on('exit', (code) => debug(`close exit ${String(code)} tag=${toastTag(id)}`))
+    child.on('exit', (code) => debug(`close exit ${String(code)} tag=${tag ?? toastTag(id)}`))
     child.unref()
   } catch {
     // ignore
@@ -443,6 +453,9 @@ export function apply(ctx) {
     let promotedOnce = false
     let toastShown = false
     let toastClosed = false
+    let currentTag = toastTag(id)
+    let reminders = 0
+    let reminderTimer = null
     let timer = null
     const clearTimer = () => {
       if (timer !== null) {
@@ -450,12 +463,19 @@ export function apply(ctx) {
         timer = null
       }
     }
+    const clearReminder = () => {
+      if (reminderTimer !== null) {
+        clearTimeout(reminderTimer)
+        reminderTimer = null
+      }
+    }
     // Windows clears the app's whole notification group on Remove, so closing
     // the same toast twice would wipe unrelated notifications. Close once.
     const closeOnce = () => {
       if (toastClosed) return
       toastClosed = true
-      if (toastShown) closeToast(id)
+      clearReminder()
+      if (toastShown) closeToast(id, { tag: currentTag })
     }
     const promoteOnce = () => {
       if (promotedOnce) return
@@ -464,6 +484,30 @@ export function apply(ctx) {
       closeOnce()
       promoted()
     }
+    // Unanswered approvals are re-notified a few times instead of exactly once:
+    // a single toast is easy to miss, but endless reminders are noise. Every
+    // reminder uses a fresh tag so Windows alerts again rather than silently
+    // updating the existing entry, and the previous one is removed first so the
+    // center does not fill with copies.
+    const scheduleReminder = () => {
+      if (reminders >= REMINDER_LIMIT || promotedOnce || toastClosed) return
+      reminderTimer = setTimeout(() => {
+        reminderTimer = null
+        if (promotedOnce || toastClosed) return
+        if (windowFocused) {
+          // Back at the keyboard: the card is enough, but keep the option open
+          // for a later blur.
+          scheduleReminder()
+          return
+        }
+        reminders += 1
+        closeToast(id, { noClear: true, tag: currentTag })
+        currentTag = reminderTag(id, reminders)
+        if (!showToast({ id, title, body, endpoint, token, tag: currentTag })) return
+        debug(`toast reminder ${reminders} id=${id}`)
+        scheduleReminder()
+      }, REMINDER_DELAY_MS)
+    }
     // The toast is shown when the request arrives while the app is in the
     // background. A request that arrives while the user is looking at the
     // in-app card stays registered here without a toast, so it can still be
@@ -471,7 +515,7 @@ export function apply(ctx) {
     const notify = () => {
       if (toastShown || promotedOnce) return
       toastShown = true
-      if (!showToast({ id, title, body, endpoint, token })) {
+      if (!showToast({ id, title, body, endpoint, token, tag: currentTag })) {
         // No toast script (or not Windows): the in-app card is the only path.
         toastShown = false
         promoteOnce()
@@ -483,6 +527,7 @@ export function apply(ctx) {
         promoteOnce()
         promoteAll()
       }, APPROVAL_TIMEOUT_MS)
+      scheduleReminder()
     }
     pending.set(id, {
       token,
@@ -492,6 +537,7 @@ export function apply(ctx) {
       notify,
       settle: (value) => {
         clearTimer()
+        clearReminder()
         resolveToast({ source: 'toast', value })
       },
       promote: promoteOnce,
