@@ -46,7 +46,9 @@ public static extern void SetCurrentProcessExplicitAppUserModelID(string appId);
   $left = @($history.GetHistory($AppId))
   Write-Log ("after remove count={0}" -f $left.Count)
   if ($left.Count -gt 0) {
-    # Tag matching can miss; we only ever show one approval toast at a time.
+    # Tag matching can miss (protocol-activated toasts are not always indexed by
+    # tag); clearing the app's group is the fallback. The Host promotes any
+    # other pending request to its in-app card when this happens.
     $history.Clear($AppId)
     Start-Sleep -Milliseconds 120
     $left2 = @($history.GetHistory($AppId))

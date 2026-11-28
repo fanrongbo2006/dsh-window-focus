@@ -105,23 +105,25 @@ agent 请求审批
    │
    ▼
 index.js（Host，global + prepend 监听 approval/request）
-   ① 立即 next() —— 应用内审批卡先出现，不会因为没点通知而错过
-   ② 客户端上报窗口在前台？是 → 到此为止（只留应用内卡片）
-                        否 → 生成随机 id + token，用 PowerShell + WinRT 弹原生 toast（两个按钮，协议激活）
+   ├─ 窗口在前台 ──▶ 直接 next()：只显示应用内审批卡，不弹通知
    │
-   ├─ 点「允许一次 / 拒绝」 ──▶ 协议激活 dsh-window-focus:allow|reject?id=…&token=…
-   │                              └─▶ toast-action.vbs → toast-action.ps1 → POST /dsh-window-focus/result
-   │                                  宿主校验 token，返回 allowed-once / rejected（不切窗口）
-   │
-   ├─ 点 toast 正文 ──▶ POST /result（decision=open）→ 聚焦窗口 + 关闭 toast；审批卡片保留
-   ├─ 回到应用窗口（focus 事件）──▶ POST /dsh-window-focus/dismiss → 关闭 toast；审批卡片保留
-   └─ 30 秒没操作 ──▶ 关闭 toast；审批卡片保留
+   └─ 窗口不在前台 ──▶ 生成随机 id + token，用 PowerShell + WinRT 弹原生 toast（两个按钮，协议激活）
+        │                此时不创建应用内卡片，避免通知被回答后留下僵尸卡片
+        │
+        ├─ 点「允许一次 / 拒绝」──▶ 协议激活 dsh-window-focus:allow|reject?id=…&token=…
+        │                            └─▶ toast-action.vbs → toast-action.ps1 → POST /dsh-window-focus/result
+        │                                宿主校验 token 后结算，并关闭 toast（不切窗口、不生成卡片）
+        │
+        ├─ 点 toast 正文 ──▶ POST /result（decision=open）→ 关闭 toast + 聚焦窗口 + next() 生成应用内卡片
+        ├─ 回到应用窗口（focus 事件）──▶ POST /dsh-window-focus/dismiss → 关闭 toast，所有 pending 转为应用内卡片
+        └─ 30 秒没操作 ──▶ 关闭 toast，并把该请求转为应用内卡片
 ```
 
 - toast 的 AppUserModelId 为 `Fanrongbo.DSH.WindowFocus`，协议 `dsh-window-focus:` 由 `wscript.exe` 启动 `scripts/toast-action.vbs`，再用隐藏窗口调起 `toast-action.ps1`（直接启动 powershell.exe 会闪一个终端窗口）；
-- 结果路由校验一次性 token，外部网页无法伪造审批结果；
+- 结果路由校验一次性 `id + token`，`toast-action.ps1` 还会校验 URI 协议与回调地址必须是本机 Host，外部网页无法伪造审批结果；
+- 所有 POST 控制路由都要求 `Content-Type: application/json`，跨站表单（`text/plain`）无法触发；
 - 客户端通过 `POST /dsh-window-focus/state` 上报焦点状态（`focus`/`blur` 事件 + 初始化各一次），Host 据此决定要不要弹 toast；
-- 同一时间只弹一个可操作 toast，避免多个审批堆叠。
+- 多条审批同时排队：窗口不在前台时每条各弹一条 toast；关闭同组通知时，其余还悬着的请求会自动转成应用内卡片，不会丢。
 
 ## 兼容性
 
@@ -138,7 +140,7 @@ index.js（Host，global + prepend 监听 approval/request）
 
 有三种方式：npm 安装（推荐，需要联网）、手动安装（离线可用）、让 agent 代劳。包已发布到 npm（包名 `dsh-window-focus`）。
 
-> **版本提示**：npm 上的 1.0.0 只有“点击聚焦 + 文案改写”；带「允许一次 / 拒绝」按钮、AUMID 图标与多通知排队的 1.1.3 需要从 GitHub 仓库手动安装，或等 npm 更新后再用方式一。
+> **版本提示**：npm 上的 1.0.0 只有“点击聚焦 + 文案改写”；带「允许一次 / 拒绝」按钮、AUMID 图标、多通知排队与僵尸卡片修复的 1.1.4 需要从 GitHub 仓库手动安装，或等 npm 更新后再用方式一。
 
 ### 方式一：npm 安装（推荐）
 
@@ -344,7 +346,7 @@ Host 侧日志：`%TEMP%\dsh-window-focus-debug.log`（记录 `apply`、`approva
 | `scripts/toast-action.ps1` | 协议回调：解析按钮 URI，POST 结果到 Host |
 | `scripts/close-toast.ps1` | 超时或取消时关闭/清除通知 |
 | `assets/whale.png` | toast 左侧头像（取自 `dsh-pet`，MIT 许可） |
-| `assets/dsh.png` | AppUserModelId 图标（取自 DeepSeek Harness 应用图标） |
+| `assets/dsh.png`、`assets/dsh.ico` | AppUserModelId 图标（取自 DeepSeek Harness 应用图标，仅用于标注通知来源） |
 | `cordis.patch.yml` | bundle 挂载声明，让 DSH 在启动时加载本插件 |
 | `locale/zh.json`、`locale/en.json` | 插件市场里的标题与描述 |
 | `icon.svg` | 市场卡片图标 |
@@ -365,6 +367,9 @@ POST /dsh-window-focus/state
 | `405` | `{"allow":"POST"}` | 用了非 POST 方法 |
 | `400` | `{"ok":false,"error":"bad-request"}` | 缺少 id / token / 非法 decision |
 | `403` | `{"ok":false,"error":"forbidden"}` | id 不存在或 token 不匹配 |
+| `415` | `{"ok":false,"error":"unsupported-media-type"}` | 请求没有用 `Content-Type: application/json` |
+
+所有 POST 路由都要求 JSON 请求体，跨站表单的 `text/plain` 请求无法触发这些控制接口。
 
 客户端只在 `location.protocol === 'dsh-app:'` 时注册监听，因此浏览器版不会发出这些请求。
 

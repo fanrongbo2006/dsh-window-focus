@@ -23,7 +23,6 @@ window.__ModuleLoader__.load({
     const FOCUS_ENDPOINT = '/dsh-window-focus/focus'
     const DISMISS_ENDPOINT = '/dsh-window-focus/dismiss'
     const STATE_ENDPOINT = '/dsh-window-focus/state'
-    const DECISIONS_ENDPOINT = '/dsh-window-focus/decisions'
     const APPROVAL_TITLE = '正在申请权限'
     const QUESTION_TITLE = '模型在等你回答'
     const DSH_TITLE = /(正在申请权限|模型在等你回答|对话完成|生成失败|输出被截断)/
@@ -269,51 +268,7 @@ window.__ModuleLoader__.load({
         window.addEventListener('blur', onWindowBlur)
         postState(typeof document !== 'undefined' && document.hasFocus())
 
-        // Toast buttons are answered on the Host. The same request also arrived
-        // here as an in-app approval card; poll the Host decision list and press
-        // the matching card button so it disappears instead of lingering after
-        // the toast already decided the request.
-        const findApprovalCard = (decision) => {
-          if (typeof document === 'undefined') return null
-          const cards = Array.from(document.querySelectorAll('[data-approval-key]'))
-          if (cards.length === 0) return null
-          if (cards.length === 1) return cards[0]
-          if (typeof decision.toolName === 'string' && decision.toolName !== '') {
-            const matching = cards.find((card) => (card.textContent ?? '').includes(decision.toolName))
-            if (matching !== undefined) return matching
-          }
-          return cards[cards.length - 1]
-        }
-        const pressCard = (decision) => {
-          const card = findApprovalCard(decision)
-          if (card === null) return
-          const buttons = Array.from(card.querySelectorAll('button'))
-          if (buttons.length === 0) return
-          // The card renders [reject, allow] (and optionally allow-always last).
-          const target = decision.outcome === 'allowed-once'
-            ? buttons.find((button) => /allow|允许/i.test(button.textContent ?? '')) ?? buttons[buttons.length - 1]
-            : buttons.find((button) => /reject|拒绝/i.test(button.textContent ?? '')) ?? buttons[0]
-          if (target === undefined || target.disabled) return
-          target.click()
-        }
-        const pollDecisions = async () => {
-          if (typeof document === 'undefined') return
-          if (document.querySelector('[data-approval-key]') === null) return
-          let payload
-          try {
-            const response = await fetch(DECISIONS_ENDPOINT)
-            if (!response.ok) return
-            payload = await response.json()
-          } catch {
-            return
-          }
-          if (!payload || !Array.isArray(payload.decisions)) return
-          for (const decision of payload.decisions) pressCard(decision)
-        }
-        const pollTimer = typeof document === 'undefined' ? null : setInterval(pollDecisions, 700)
-
         ctx.effect(() => () => {
-          if (pollTimer !== null) clearInterval(pollTimer)
           window.removeEventListener('focus', onWindowFocus)
           window.removeEventListener('blur', onWindowBlur)
           if (window.Notification === WrappedNotification) {

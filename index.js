@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process'
 import { randomBytes, randomUUID } from 'node:crypto'
-import { appendFileSync, existsSync } from 'node:fs'
+import { appendFileSync, existsSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -8,7 +8,6 @@ const ROUTE = '/dsh-window-focus/result'
 const FOCUS_ROUTE = '/dsh-window-focus/focus'
 const DISMISS_ROUTE = '/dsh-window-focus/dismiss'
 const STATE_ROUTE = '/dsh-window-focus/state'
-const DECISIONS_ROUTE = '/dsh-window-focus/decisions'
 const APP_ID = 'Fanrongbo.DSH.WindowFocus'
 const PROTOCOL = 'dsh-window-focus'
 const APPROVAL_TIMEOUT_MS = 30000
@@ -33,6 +32,8 @@ export const inject = ['webServer']
 function debug(line) {
   try {
     const file = join(process.env.TEMP || 'C:\\Windows\\Temp', 'dsh-window-focus-debug.log')
+    // Keep the diagnostic log bounded; it is written on every approval.
+    if (existsSync(file) && statSync(file).size > 512 * 1024) writeFileSync(file, '')
     appendFileSync(file, `[${new Date().toISOString()}] ${line}\n`)
   } catch {
     // ignore
@@ -145,8 +146,9 @@ function ensureShortcut() {
   if (process.platform !== 'win32') return
   const lnk = join(process.env.APPDATA || '', 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'DSH Window Focus.lnk')
   try {
-    if (existsSync(lnk)) return
     if (!existsSync(INSTALL_SHORTCUT_SCRIPT)) return
+    // (Re)create on every start: the target carries the executable path and the
+    // icon, both of which can change between plugin versions.
     // An unpackaged app only gets a toast header icon when its AUMID is backed
     // by a Start Menu shortcut that carries the icon.
     const child = spawn(powershellPath(), [
@@ -154,6 +156,10 @@ function ensureShortcut() {
       '-File', INSTALL_SHORTCUT_SCRIPT,
       '-LnkPath', lnk,
       '-AppId', APP_ID,
+      // Clicking the Start Menu entry should open the app; the shortcut exists
+      // mainly to give our unpackaged AUMID an icon, but a dead entry would be
+      // confusing.
+      '-Target', resolveAppExecutable() || wscriptPath(),
       '-IconPath', existsSync(APP_ICO) ? APP_ICO : APP_ICON,
     ], { stdio: 'ignore', windowsHide: true })
     child.on('error', () => {})
@@ -244,12 +250,22 @@ function readJsonBody(req) {
   })
 }
 
+// Requiring JSON keeps simple cross-site form posts (`text/plain`) away from
+// the local-only control routes: they cannot send this content type without a
+// CORS preflight, which this server never answers.
+function hasJsonContentType(req) {
+  const value = req.headers?.['content-type']
+  const type = Array.isArray(value) ? value[0] : value
+  return typeof type === 'string' && type.toLowerCase().includes('application/json')
+}
+
 // Windows limits a toast Tag to 16 characters, so the 36-char request id has
 // to be shortened consistently for both Show and History.Remove.
 const toastTag = (id) => String(id).replaceAll('-', '').slice(0, 16)
 
 function showToast({ id, title, body, endpoint, token }) {
-  if (!existsSync(TOAST_SCRIPT)) return
+  if (!existsSync(TOAST_SCRIPT)) return false
+  if (process.platform !== 'win32') return false
   const query = (action) => {
     const params = new URLSearchParams({ id, token, endpoint })
     return `${PROTOCOL}:${action}?${params.toString()}`
@@ -273,7 +289,6 @@ function showToast({ id, title, body, endpoint, token }) {
     args.push('-IconPath', AVATAR_ICON)
   }
   debug(`toast spawn icon=${String(existsSync(AVATAR_ICON))} title=${title}`)
-  if (process.platform !== 'win32') return
   try {
     const child = spawn(powershellPath(), args, {
       stdio: 'ignore',
@@ -282,8 +297,9 @@ function showToast({ id, title, body, endpoint, token }) {
     child.on('error', (error) => debug(`toast error ${String(error)}`))
     child.on('exit', (code) => debug(`toast exit ${code}`))
     child.unref()
+    return true
   } catch {
-    // ignore
+    return false
   }
 }
 
@@ -329,25 +345,6 @@ export function apply(ctx) {
   // the user is already looking at the in-app card a toast would be noise.
   let windowFocused = false
 
-  // A toast decision is also published here so the browser half can settle the
-  // in-app approval card it received through the Host waterfall. Without this
-  // the card would stay on screen after the toast already answered.
-  const decisions = []
-  const DECISION_TTL_MS = 60_000
-  const recordDecision = (request, outcome) => {
-    const now = Date.now()
-    for (let i = decisions.length - 1; i >= 0; i -= 1) {
-      if (now - decisions[i].at > DECISION_TTL_MS) decisions.splice(i, 1)
-    }
-    decisions.push({
-      callId: typeof request.callId === 'string' ? request.callId : null,
-      toolName: typeof request.toolName === 'string' ? request.toolName : '',
-      reason: typeof request.reason === 'string' ? request.reason : null,
-      outcome,
-      at: now,
-    })
-  }
-
   const finish = (id, outcome) => {
     const entry = pending.get(id)
     if (!entry) return false
@@ -356,6 +353,13 @@ export function apply(ctx) {
     clearTimeout(entry.timer)
     entry.settle(outcome)
     return true
+  }
+
+  // Windows clears the whole notification group when one toast is removed, so
+  // when a toast disappears every still-pending request is moved to its in-app
+  // card immediately instead of waiting for its own timeout.
+  const promoteAll = () => {
+    for (const entry of pending.values()) entry.promote?.()
   }
 
   const onApproval = async (request, next) => {
@@ -402,6 +406,13 @@ export function apply(ctx) {
     const title = `${severityPrefix(level)}正在申请权限`
     const body = shorten(request.reason) || `工具「${request.toolName}」请求权限`
 
+    if (!showToast({ id, title, body, endpoint, token })) {
+      // No toast script (or not Windows): the in-app card is the only path.
+      const early = await startSession()
+      return early.value
+    }
+    debug(`toast shown title=${title}`)
+
     let resolveToast
     const toastResult = new Promise((resolve) => {
       resolveToast = resolve
@@ -420,6 +431,7 @@ export function apply(ctx) {
     const timer = setTimeout(() => {
       debug(`timeout id=${id}`)
       promoteOnce()
+      promoteAll()
     }, APPROVAL_TIMEOUT_MS)
     pending.set(id, {
       token,
@@ -430,8 +442,6 @@ export function apply(ctx) {
       },
       promote: promoteOnce,
     })
-    showToast({ id, title, body, endpoint, token })
-    debug(`toast shown title=${title}`)
 
     const first = await Promise.race([sessionPromise ?? new Promise(() => {}), promotedResult, toastResult])
     const entry = pending.get(id)
@@ -440,16 +450,20 @@ export function apply(ctx) {
       pending.delete(id)
     }
 
-    if (first.source === 'session') return first.value
+    if (first.source === 'session') {
+      // Answered in the in-app card: the toast for this request is obsolete,
+      // and removing it clears the notification group.
+      closeToast(id)
+      promoteAll()
+      return first.value
+    }
     if (first.value === OUTCOME_ALLOW || first.value === OUTCOME_REJECT) {
       // Answering from the toast must also clear it from the notification
       // center; leaving it there is what users experience as a zombie toast.
       closeToast(id)
       // Closing one toast clears the app's notification group, so any other
       // queued approvals are promoted to their in-app cards right away.
-      for (const other of pending.values()) {
-        other.promote?.()
-      }
+      promoteAll()
       return first.value
     }
     // The toast was dismissed, its body was clicked, or it timed out: fall back
@@ -480,6 +494,10 @@ export function apply(ctx) {
         sendJson(res, 405, { ok: false, error: 'method-not-allowed' })
         return
       }
+      if (!hasJsonContentType(req)) {
+        sendJson(res, 415, { ok: false, error: 'unsupported-media-type' })
+        return
+      }
       const body = await readJsonBody(req)
       if (!body || typeof body.id !== 'string' || typeof body.token !== 'string') {
         sendJson(res, 400, { ok: false, error: 'bad-request' })
@@ -504,6 +522,7 @@ export function apply(ctx) {
         // Body click only raises the window and promotes the request to the
         // in-app card; the user still decides there.
         entry.promote?.()
+        promoteAll()
         focusDesktopWindow()
         sendJson(res, 200, { ok: true, decision: 'open' })
         return
@@ -536,13 +555,15 @@ export function apply(ctx) {
         sendJson(res, 405, { ok: false, error: 'method-not-allowed' })
         return
       }
+      if (!hasJsonContentType(req)) {
+        sendJson(res, 415, { ok: false, error: 'unsupported-media-type' })
+        return
+      }
       if (typeof req.resume === 'function') req.resume()
       // The user came back to the app window: clear the toasts and promote the
       // pending requests to the normal in-app cards.
       debug(`dismiss requested pending=${pending.size}`)
-      for (const entry of pending.values()) {
-        entry.promote?.()
-      }
+      promoteAll()
       sendJson(res, 200, { ok: true })
     },
   }), 'dsh-window-focus: dismiss route')
@@ -556,6 +577,10 @@ export function apply(ctx) {
         sendJson(res, 405, { ok: false, error: 'method-not-allowed' })
         return
       }
+      if (!hasJsonContentType(req)) {
+        sendJson(res, 415, { ok: false, error: 'unsupported-media-type' })
+        return
+      }
       const body = await readJsonBody(req)
       if (!body || typeof body.focused !== 'boolean') {
         sendJson(res, 400, { ok: false, error: 'bad-request' })
@@ -563,30 +588,8 @@ export function apply(ctx) {
       }
       windowFocused = body.focused
       debug(`window focused=${windowFocused}`)
-      if (windowFocused) {
-        for (const entry of pending.values()) {
-          entry.promote?.()
-        }
-      }
+      if (windowFocused) promoteAll()
       sendJson(res, 200, { ok: true })
     },
   }), 'dsh-window-focus: state route')
-
-  ctx.effect(() => ctx.webServer.register({
-    kind: 'exact',
-    path: DECISIONS_ROUTE,
-    handler: async (req, res) => {
-      if (req.method !== 'GET') {
-        res.setHeader('allow', 'GET')
-        sendJson(res, 405, { ok: false, error: 'method-not-allowed' })
-        return
-      }
-      const now = Date.now()
-      for (let i = decisions.length - 1; i >= 0; i -= 1) {
-        if (now - decisions[i].at > DECISION_TTL_MS) decisions.splice(i, 1)
-      }
-      if (decisions.length > 0) debug(`decisions served count=${decisions.length}`)
-      sendJson(res, 200, { ok: true, decisions })
-    },
-  }), 'dsh-window-focus: decisions route')
 }
