@@ -32,7 +32,10 @@ $esc = { param($s) $s -replace '&', '&amp;' -replace '<', '&lt;' -replace '>', '
 
 $imageXml = ''
 if ($IconPath -and (Test-Path -LiteralPath $IconPath)) {
-  $iconUri = ([System.Uri](Resolve-Path -LiteralPath $IconPath).Path).AbsoluteUri
+  # Use the raw (unencoded) file URI: Windows toast image resolution does not
+  # decode percent-encoded non-ASCII segments such as the user profile folder.
+  $iconPath = (Resolve-Path -LiteralPath $IconPath).Path -replace '\\', '/'
+  $iconUri = 'file:///' + $iconPath
   $imageXml = '      <image placement="appLogoOverride" hint-crop="circle" src="' + (& $esc $iconUri) + '" />'
 }
 

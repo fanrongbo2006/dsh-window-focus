@@ -2,12 +2,13 @@ import { spawn } from 'node:child_process'
 import { randomBytes, randomUUID } from 'node:crypto'
 import { appendFileSync, existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { fileURLToPath } from 'node:url'
 
 const ROUTE = '/dsh-window-focus/result'
 const FOCUS_ROUTE = '/dsh-window-focus/focus'
 const DISMISS_ROUTE = '/dsh-window-focus/dismiss'
 const STATE_ROUTE = '/dsh-window-focus/state'
+const DECISIONS_ROUTE = '/dsh-window-focus/decisions'
 const APP_ID = 'Fanrongbo.DSH.WindowFocus'
 const PROTOCOL = 'dsh-window-focus'
 const APPROVAL_TIMEOUT_MS = 30000
@@ -19,10 +20,12 @@ const OUTCOME_REJECT = 'rejected'
 const PACKAGE_DIR = dirname(fileURLToPath(import.meta.url))
 const SCRIPTS_DIR = join(PACKAGE_DIR, 'scripts')
 const APP_ICON = join(PACKAGE_DIR, 'assets', 'dsh.png')
+const APP_ICO = join(PACKAGE_DIR, 'assets', 'dsh.ico')
 const AVATAR_ICON = join(PACKAGE_DIR, 'assets', 'whale.png')
 const TOAST_SCRIPT = join(SCRIPTS_DIR, 'toast.ps1')
 const ACTION_LAUNCHER = join(SCRIPTS_DIR, 'toast-action.vbs')
 const CLOSE_SCRIPT = join(SCRIPTS_DIR, 'close-toast.ps1')
+const INSTALL_SHORTCUT_SCRIPT = join(SCRIPTS_DIR, 'install-shortcut.ps1')
 
 export const name = 'dsh-window-focus'
 export const inject = ['webServer']
@@ -124,12 +127,40 @@ function registerAppId() {
     `HKCU\\Software\\Classes\\AppUserModelId\\${APP_ID}`,
     '/v', 'ShowInSettings', '/d', '1', '/f',
   ])
-  if (existsSync(APP_ICON)) {
+  if (existsSync(APP_ICO) || existsSync(APP_ICON)) {
+    // Windows does not resolve percent-encoded non-ASCII file URIs (the user
+    // profile contains 范), so hand it the raw Unicode path. The AUMID header
+    // icon expects an ICO; fall back to the PNG when the ICO is missing.
+    const source = existsSync(APP_ICO) ? APP_ICO : APP_ICON
+    const iconUri = 'file:///' + source.replaceAll('\\', '/')
     runReg([
       'add',
       `HKCU\\Software\\Classes\\AppUserModelId\\${APP_ID}`,
-      '/v', 'IconUri', '/d', pathToFileURL(APP_ICON).href, '/f',
+      '/v', 'IconUri', '/d', iconUri, '/f',
     ])
+  }
+}
+
+function ensureShortcut() {
+  if (process.platform !== 'win32') return
+  const lnk = join(process.env.APPDATA || '', 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'DSH Window Focus.lnk')
+  try {
+    if (existsSync(lnk)) return
+    if (!existsSync(INSTALL_SHORTCUT_SCRIPT)) return
+    // An unpackaged app only gets a toast header icon when its AUMID is backed
+    // by a Start Menu shortcut that carries the icon.
+    const child = spawn(powershellPath(), [
+      '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
+      '-File', INSTALL_SHORTCUT_SCRIPT,
+      '-LnkPath', lnk,
+      '-AppId', APP_ID,
+      '-IconPath', existsSync(APP_ICO) ? APP_ICO : APP_ICON,
+    ], { stdio: 'ignore', windowsHide: true })
+    child.on('error', () => {})
+    child.on('exit', (code) => debug(`shortcut exit ${code}`))
+    child.unref()
+  } catch {
+    // the toast still works without the header icon
   }
 }
 
@@ -141,10 +172,27 @@ function severityOf(toolName, reason) {
     [3, /(写入|创建|新建|修改|覆盖|write|create|mkdir|touch)/i],
     [2, /(读取|只读|查看|read|hosts)/i],
   ]
-  for (const [level, pattern] of rules) {
-    if (pattern.test(text)) return level
+  let level = 1
+  for (const [ruleLevel, pattern] of rules) {
+    if (pattern.test(text)) {
+      level = Math.max(level, ruleLevel)
+    }
   }
-  return 1
+  // Tool names are a stronger signal than free-form reasons: `pwsh` can run
+  // anything, so it always carries at least the "write / execute" level.
+  const toolRules = [
+    [5, /(secret|credential|keychain|ssh|password|token|env|vault|web_?fetch|web_?search|browser|http|fetch|curl|download|upload|webhook|network)/i],
+    [5, /(plugin_?manager|install|profile|config|setting)/i],
+    [3, /(bash|shell|pwsh|powershell|cmd|terminal|exec|run_?command|process)/i],
+    [3, /(write|edit|multi_?edit|apply_?patch|create|mkdir|touch|notebook|delete|remove|move|copy|rename|patch)/i],
+    [2, /(read|glob|grep|ls|list|view|cat|stat|find|search|dir|head|tail|open)/i],
+  ]
+  for (const [ruleLevel, pattern] of toolRules) {
+    if (pattern.test(toolName || '')) {
+      level = Math.max(level, ruleLevel)
+    }
+  }
+  return level
 }
 
 function severityPrefix(level) {
@@ -196,6 +244,10 @@ function readJsonBody(req) {
   })
 }
 
+// Windows limits a toast Tag to 16 characters, so the 36-char request id has
+// to be shortened consistently for both Show and History.Remove.
+const toastTag = (id) => String(id).replaceAll('-', '').slice(0, 16)
+
 function showToast({ id, title, body, endpoint, token }) {
   if (!existsSync(TOAST_SCRIPT)) return
   const query = (action) => {
@@ -215,7 +267,7 @@ function showToast({ id, title, body, endpoint, token }) {
     '-OpenUri', query('open'),
     '-AllowLabel', '允许一次',
     '-RejectLabel', '拒绝',
-    '-Tag', id,
+    '-Tag', toastTag(id),
   ]
   if (existsSync(AVATAR_ICON)) {
     args.push('-IconPath', AVATAR_ICON)
@@ -244,9 +296,10 @@ function closeToast(id) {
       '-WindowStyle', 'Hidden',
       '-File', CLOSE_SCRIPT,
       '-AppId', APP_ID,
-      '-Tag', id,
+      '-Tag', toastTag(id),
     ], { stdio: 'ignore', windowsHide: true })
     child.on('error', () => {})
+    child.on('exit', (code) => debug(`close exit ${String(code)} tag=${toastTag(id)}`))
     child.unref()
   } catch {
     // ignore
@@ -269,11 +322,31 @@ export function apply(ctx) {
 
   registerProtocol()
   registerAppId()
+  ensureShortcut()
 
   const pending = new Map()
   // The browser half reports whether the app window is in the foreground; when
   // the user is already looking at the in-app card a toast would be noise.
   let windowFocused = false
+
+  // A toast decision is also published here so the browser half can settle the
+  // in-app approval card it received through the Host waterfall. Without this
+  // the card would stay on screen after the toast already answered.
+  const decisions = []
+  const DECISION_TTL_MS = 60_000
+  const recordDecision = (request, outcome) => {
+    const now = Date.now()
+    for (let i = decisions.length - 1; i >= 0; i -= 1) {
+      if (now - decisions[i].at > DECISION_TTL_MS) decisions.splice(i, 1)
+    }
+    decisions.push({
+      callId: typeof request.callId === 'string' ? request.callId : null,
+      toolName: typeof request.toolName === 'string' ? request.toolName : '',
+      reason: typeof request.reason === 'string' ? request.reason : null,
+      outcome,
+      at: now,
+    })
+  }
 
   const finish = (id, outcome) => {
     const entry = pending.get(id)
@@ -281,27 +354,33 @@ export function apply(ctx) {
     debug(`finish id=${id} outcome=${String(outcome)}`)
     pending.delete(id)
     clearTimeout(entry.timer)
-    entry.resolve(outcome)
+    entry.settle(outcome)
     return true
   }
 
   const onApproval = async (request, next) => {
     debug(`approval tool=${request.toolName} pending=${pending.size}`)
-    // The in-app approval card must always appear: forward first, then offer a
-    // toast as a second way to answer the same request.
-    const sessionResult = Promise.resolve()
-      .then(() => next())
-      .then((value) => ({ source: 'session', value }))
-      .catch(() => ({ source: 'session', value: undefined }))
-
-    // One actionable toast at a time; further requests only get the in-app card.
-    if (pending.size > 0) {
-      const early = await sessionResult
-      return early.value
+    // The in-app card is only created when it is actually needed. While the
+    // user is away a toast is offered first; if the toast answers the request,
+    // no card is ever shown — so nothing can linger as a zombie. If the user
+    // comes back, the toast expires, or the toast body is clicked, the request
+    // is promoted to the normal in-app card and answered there.
+    let sessionPromise = null
+    const startSession = () => {
+      if (sessionPromise === null) {
+        sessionPromise = Promise.resolve()
+          .then(() => next())
+          .then((value) => ({ source: 'session', value }))
+          .catch(() => ({ source: 'session', value: undefined }))
+      }
+      return sessionPromise
     }
 
+    // While the user is looking at the app the card is enough. Otherwise every
+    // request gets its own toast: several approvals can be queued in the
+    // notification center and answered independently.
     if (windowFocused) {
-      const early = await sessionResult
+      const early = await startSession()
       return early.value
     }
 
@@ -315,7 +394,7 @@ export function apply(ctx) {
       }
     })()
     if (!endpoint) {
-      const early = await sessionResult
+      const early = await startSession()
       return early.value
     }
 
@@ -327,39 +406,55 @@ export function apply(ctx) {
     const toastResult = new Promise((resolve) => {
       resolveToast = resolve
     })
+    let promoted
+    const promotedResult = new Promise((resolve) => {
+      promoted = () => resolve(startSession())
+    })
+    let promotedOnce = false
+    const promoteOnce = () => {
+      if (promotedOnce) return
+      promotedOnce = true
+      closeToast(id)
+      promoted()
+    }
     const timer = setTimeout(() => {
       debug(`timeout id=${id}`)
-      closeToast(id)
-      resolveToast({ source: 'toast', value: undefined })
+      promoteOnce()
     }, APPROVAL_TIMEOUT_MS)
     pending.set(id, {
       token,
       timer,
-      resolve: (value) => {
+      settle: (value) => {
         clearTimeout(timer)
         resolveToast({ source: 'toast', value })
       },
+      promote: promoteOnce,
     })
     showToast({ id, title, body, endpoint, token })
     debug(`toast shown title=${title}`)
 
-    const first = await Promise.race([sessionResult, toastResult])
+    const first = await Promise.race([sessionPromise ?? new Promise(() => {}), promotedResult, toastResult])
     const entry = pending.get(id)
     if (entry) {
       clearTimeout(entry.timer)
       pending.delete(id)
     }
 
-    if (first.source === 'session') {
-      closeToast(id)
-      return first.value
-    }
+    if (first.source === 'session') return first.value
     if (first.value === OUTCOME_ALLOW || first.value === OUTCOME_REJECT) {
+      // Answering from the toast must also clear it from the notification
+      // center; leaving it there is what users experience as a zombie toast.
+      closeToast(id)
+      // Closing one toast clears the app's notification group, so any other
+      // queued approvals are promoted to their in-app cards right away.
+      for (const other of pending.values()) {
+        other.promote?.()
+      }
       return first.value
     }
-    // The toast was dismissed or its body was clicked: keep the in-app card open
-    // and let the user decide there.
-    const decision = await sessionResult
+    // The toast was dismissed, its body was clicked, or it timed out: fall back
+    // to the in-app card and wait for the user's decision there.
+    const decision = await startSession()
     return decision.value
   }
 
@@ -370,7 +465,7 @@ export function apply(ctx) {
       dispose?.()
       for (const [id, entry] of pending) {
         clearTimeout(entry.timer)
-        entry.resolve(undefined)
+        entry.settle(undefined)
         pending.delete(id)
       }
     }
@@ -406,10 +501,9 @@ export function apply(ctx) {
         return
       }
       if (body.decision === 'open') {
-        // Body click only raises the window: the in-app card must stay open so
-        // the user can decide there.
-        closeToast(body.id)
-        entry.resolve('open')
+        // Body click only raises the window and promotes the request to the
+        // in-app card; the user still decides there.
+        entry.promote?.()
         focusDesktopWindow()
         sendJson(res, 200, { ok: true, decision: 'open' })
         return
@@ -443,11 +537,11 @@ export function apply(ctx) {
         return
       }
       if (typeof req.resume === 'function') req.resume()
-      // The user came back to the app window: clear the toasts but keep the
-      // approvals pending so they can be answered in the in-app card.
-      for (const [id, entry] of pending) {
-        closeToast(id)
-        entry.resolve('dismiss')
+      // The user came back to the app window: clear the toasts and promote the
+      // pending requests to the normal in-app cards.
+      debug(`dismiss requested pending=${pending.size}`)
+      for (const entry of pending.values()) {
+        entry.promote?.()
       }
       sendJson(res, 200, { ok: true })
     },
@@ -469,7 +563,30 @@ export function apply(ctx) {
       }
       windowFocused = body.focused
       debug(`window focused=${windowFocused}`)
+      if (windowFocused) {
+        for (const entry of pending.values()) {
+          entry.promote?.()
+        }
+      }
       sendJson(res, 200, { ok: true })
     },
   }), 'dsh-window-focus: state route')
+
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: DECISIONS_ROUTE,
+    handler: async (req, res) => {
+      if (req.method !== 'GET') {
+        res.setHeader('allow', 'GET')
+        sendJson(res, 405, { ok: false, error: 'method-not-allowed' })
+        return
+      }
+      const now = Date.now()
+      for (let i = decisions.length - 1; i >= 0; i -= 1) {
+        if (now - decisions[i].at > DECISION_TTL_MS) decisions.splice(i, 1)
+      }
+      if (decisions.length > 0) debug(`decisions served count=${decisions.length}`)
+      sendJson(res, 200, { ok: true, decisions })
+    },
+  }), 'dsh-window-focus: decisions route')
 }
