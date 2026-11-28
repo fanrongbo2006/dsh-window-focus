@@ -10,6 +10,9 @@ const DISMISS_ROUTE = '/dsh-window-focus/dismiss'
 const STATE_ROUTE = '/dsh-window-focus/state'
 const DECISIONS_ROUTE = '/dsh-window-focus/decisions'
 const APP_ID = 'Fanrongbo.DSH.WindowFocus'
+// Question notifications live under their own AUMID so clearing them when the
+// user returns cannot wipe approval toasts, which are the ones with buttons.
+const QUESTIONS_APP_ID = 'Fanrongbo.DSH.WindowFocus.Questions'
 const PROTOCOL = 'dsh-window-focus'
 // Unanswered approvals are re-notified a few times: once is easy to miss when
 // the user has just stepped away, but a notification every minute forever is
@@ -130,55 +133,63 @@ function registerProtocol() {
 
 function registerAppId() {
   if (process.platform !== 'win32') return
-  runReg([
-    'add',
-    `HKCU\\Software\\Classes\\AppUserModelId\\${APP_ID}`,
-    '/v', 'DisplayName', '/d', 'DeepSeek Harness', '/f',
-  ])
-  runReg([
-    'add',
-    `HKCU\\Software\\Classes\\AppUserModelId\\${APP_ID}`,
-    '/v', 'ShowInSettings', '/d', '1', '/f',
-  ])
-  if (existsSync(APP_ICO) || existsSync(APP_ICON)) {
-    // Windows does not resolve percent-encoded non-ASCII file URIs (the user
-    // profile contains 范), so hand it the raw Unicode path. The AUMID header
-    // icon expects an ICO; fall back to the PNG when the ICO is missing.
-    const source = existsSync(APP_ICO) ? APP_ICO : APP_ICON
-    const iconUri = 'file:///' + source.replaceAll('\\', '/')
+  const appIds = [APP_ID, QUESTIONS_APP_ID]
+  for (const appId of appIds) {
     runReg([
       'add',
-      `HKCU\\Software\\Classes\\AppUserModelId\\${APP_ID}`,
-      '/v', 'IconUri', '/d', iconUri, '/f',
+      `HKCU\\Software\\Classes\\AppUserModelId\\${appId}`,
+      '/v', 'DisplayName', '/d', 'DeepSeek Harness', '/f',
     ])
+    runReg([
+      'add',
+      `HKCU\\Software\\Classes\\AppUserModelId\\${appId}`,
+      '/v', 'ShowInSettings', '/d', '1', '/f',
+    ])
+    if (existsSync(APP_ICO) || existsSync(APP_ICON)) {
+      // Windows does not resolve percent-encoded non-ASCII file URIs (the user
+      // profile contains 范), so hand it the raw Unicode path. The AUMID header
+      // icon expects an ICO; fall back to the PNG when the ICO is missing.
+      const source = existsSync(APP_ICO) ? APP_ICO : APP_ICON
+      const iconUri = 'file:///' + source.replaceAll('\\', '/')
+      runReg([
+        'add',
+        `HKCU\\Software\\Classes\\AppUserModelId\\${appId}`,
+        '/v', 'IconUri', '/d', iconUri, '/f',
+      ])
+    }
   }
 }
 
 function ensureShortcut() {
   if (process.platform !== 'win32') return
-  const lnk = join(process.env.APPDATA || '', 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'DSH Window Focus.lnk')
-  try {
-    if (!existsSync(INSTALL_SHORTCUT_SCRIPT)) return
-    // (Re)create on every start: the target carries the executable path and the
-    // icon, both of which can change between plugin versions.
-    // An unpackaged app only gets a toast header icon when its AUMID is backed
-    // by a Start Menu shortcut that carries the icon.
-    const child = spawn(powershellPath(), [
-      '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
-      '-File', INSTALL_SHORTCUT_SCRIPT,
-      '-LnkPath', lnk,
-      '-AppId', APP_ID,
-      // Clicking the Start Menu entry should open the app; the shortcut exists
-      // mainly to give our unpackaged AUMID an icon, but a dead entry would be
-      // confusing.
-      '-Target', resolveAppExecutable() || wscriptPath(),
-      '-IconPath', existsSync(APP_ICO) ? APP_ICO : APP_ICON,
-    ], { stdio: 'ignore', windowsHide: true })
-    child.on('error', () => {})
-    child.on('exit', (code) => debug(`shortcut exit ${code}`))
-    child.unref()
-  } catch {
-    // the toast still works without the header icon
+  if (!existsSync(INSTALL_SHORTCUT_SCRIPT)) return
+  const programs = join(process.env.APPDATA || '', 'Microsoft', 'Windows', 'Start Menu', 'Programs')
+  // Two AUMIDs: approvals (with buttons) and questions (cleared as a group when
+  // the user returns). Each unpackaged AUMID only gets a toast header icon when
+  // a Start Menu shortcut carries that AUMID and icon.
+  const shortcuts = [
+    { lnk: join(programs, 'DSH Window Focus.lnk'), appId: APP_ID },
+    { lnk: join(programs, 'DSH Window Focus Questions.lnk'), appId: QUESTIONS_APP_ID },
+  ]
+  for (const { lnk, appId } of shortcuts) {
+    try {
+      const child = spawn(powershellPath(), [
+        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
+        '-File', INSTALL_SHORTCUT_SCRIPT,
+        '-LnkPath', lnk,
+        '-AppId', appId,
+        // Clicking the Start Menu entry should open the app; the shortcut exists
+        // mainly to give our unpackaged AUMID an icon, but a dead entry would be
+        // confusing.
+        '-Target', resolveAppExecutable() || wscriptPath(),
+        '-IconPath', existsSync(APP_ICO) ? APP_ICO : APP_ICON,
+      ], { stdio: 'ignore', windowsHide: true })
+      child.on('error', () => {})
+      child.on('exit', (code) => debug(`shortcut exit ${code} app=${appId}`))
+      child.unref()
+    } catch {
+      // the toast still works without the header icon
+    }
   }
 }
 
@@ -320,7 +331,7 @@ function showToast({ id, title, body, endpoint, token, tag }) {
   }
 }
 
-function closeToast(id, { noClear = false, tag } = {}) {
+function closeToast(id, { noClear = false, tag, appId = APP_ID } = {}) {
   if (!existsSync(CLOSE_SCRIPT)) return
   if (process.env.DSH_WINDOW_FOCUS_TEST === '1') return
   try {
@@ -329,7 +340,7 @@ function closeToast(id, { noClear = false, tag } = {}) {
       '-ExecutionPolicy', 'Bypass',
       '-WindowStyle', 'Hidden',
       '-File', CLOSE_SCRIPT,
-      '-AppId', APP_ID,
+      '-AppId', appId,
       '-Tag', tag ?? toastTag(id),
     ]
     if (noClear) args.push('-NoClear')
@@ -352,7 +363,7 @@ function showQuestionToast(origin, { id, title, body, tag }) {
     '-ExecutionPolicy', 'Bypass',
     '-WindowStyle', 'Hidden',
     '-File', TOAST_SCRIPT,
-    '-AppId', APP_ID,
+    '-AppId', QUESTIONS_APP_ID,
     '-Title', title,
     '-Body', body,
     '-OpenUri', openUri,
@@ -429,7 +440,9 @@ export function apply(ctx) {
   const closeQuestionToast = (entry) => {
     if (!entry.shown) return
     entry.shown = false
-    closeToast(entry.id, { noClear: true, tag: entry.tag })
+    // Question toasts live under their own AUMID, so clearing that group when
+    // the window returns cannot touch approval toasts that still have buttons.
+    closeToast(entry.id, { tag: entry.tag, appId: QUESTIONS_APP_ID })
   }
   const finishQuestion = (id) => {
     const entry = questions.get(id)

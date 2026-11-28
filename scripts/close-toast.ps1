@@ -37,10 +37,20 @@ public static extern void SetCurrentProcessExplicitAppUserModelID(string appId);
   [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
   $history = [Windows.UI.Notifications.ToastNotificationManager]::History
   try {
-    $history.Remove($Tag, $AppId)
+    # Each toast is shown without a group, so the single-argument overload is
+    # the one that matches by tag. Passing the app id as the group (the old
+    # code) never matched and left the toast on screen.
+    $history.Remove($Tag)
     Write-Log 'removed by tag'
   } catch {
     Write-Log ("tag remove failed: " + $_.Exception.Message)
+    try {
+      foreach ($item in $history.GetHistory($AppId)) {
+        Write-Log ("history item tag=[{0}] group=[{1}] id={2}" -f $item.Tag, $item.Group, $item.Id)
+      }
+    } catch {
+      Write-Log ("history dump failed: " + $_.Exception.Message)
+    }
   }
 
   Start-Sleep -Milliseconds 120
